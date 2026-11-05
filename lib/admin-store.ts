@@ -489,6 +489,7 @@ export interface UpsertProductInput {
   compare_at_price?: number | null;
   is_featured?: boolean;
   stock: number;
+  image_url?: string | null;
   images?: Array<{ id?: string; image_url: string; order_index: number }>;
 }
 
@@ -499,7 +500,15 @@ export async function adminSaveProduct(
   const cleanName = input.name.trim();
   const cleanSlug =
     slugify(input.slug?.trim() || cleanName) || `produto-${Date.now()}`;
-  const cleanImages = (input.images ?? [])
+  const rawImagesList = [...(input.images ?? [])];
+  if (rawImagesList.length === 0 && input.image_url?.trim()) {
+    rawImagesList.push({
+      image_url: input.image_url.trim(),
+      order_index: 0,
+    });
+  }
+
+  const cleanImages = rawImagesList
     .slice(0, 8)
     .map((img, index) => {
       const fullUrl =
@@ -512,6 +521,12 @@ export async function adminSaveProduct(
       };
     })
     .filter((img) => Boolean(img.image_url));
+
+  const mainImageUrl =
+    cleanImages[0]?.image_url ||
+    (input.image_url
+      ? resolveStorageImageUrl(input.image_url, "products") || input.image_url
+      : null);
 
   const isFeaturedFlag =
     input.is_featured === undefined || input.is_featured === null
@@ -567,10 +582,10 @@ export async function adminSaveProduct(
           savedInDbId = productId;
 
           // Tenta atualizar image_url na tabela products caso a coluna exista no schema
-          if (cleanImages[0]?.image_url) {
+          if (mainImageUrl) {
             await client
               .from("products")
-              .update({ image_url: cleanImages[0].image_url })
+              .update({ image_url: mainImageUrl })
               .eq("id", productId);
           }
 

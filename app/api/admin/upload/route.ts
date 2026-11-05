@@ -1,9 +1,15 @@
-import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
-import { getServerSupabaseClient, isSupabaseConfigured } from "@/lib/supabase";
-import { resolveStorageImageUrl } from "@/lib/utils";
+import { getServerSupabaseClient, supabase } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
+
+function sanitizeStorageFileName(originalName: string): string {
+  return originalName
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, "_")
+    .replace(/[^a-zA-Z0-9._-]/g, "");
+}
 
 export async function POST(request: Request) {
   try {
@@ -21,68 +27,59 @@ export async function POST(request: Request) {
 
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-    const ext =
-      file.name.split(".").pop()?.toLowerCase().replace(/[^a-z0-9]/g, "") ||
-      "jpg";
-    const filePath = `${Date.now()}-${randomUUID().slice(0, 8)}.${ext}`;
+    const cleanName = sanitizeStorageFileName(file.name) || "imagem.jpg";
+    const filePath = `${Date.now()}-${cleanName}`;
 
-    // 1. Upload direto para o Supabase Storage (bucket 'products' ou 'banners')
-    if (isSupabaseConfigured()) {
-      const client = getServerSupabaseClient();
-      if (client) {
-        let { error: uploadError } = await client.storage
+    const client = getServerSupabaseClient() ?? supabase;
+
+    let { error: uploadError } = await client.storage
+      .from(bucket)
+      .upload(filePath, buffer, {
+        contentType: file.type || "image/jpeg",
+        upsert: true,
+      });
+
+    // Caso o bucket ainda não exista, tenta criá-lo como público e reenviar
+    if (uploadError) {
+      try {
+        await client.storage.createBucket(bucket, { public: true });
+        await client.storage.updateBucket(bucket, { public: true });
+        const retry = await client.storage
           .from(bucket)
           .upload(filePath, buffer, {
             contentType: file.type || "image/jpeg",
             upsert: true,
           });
-
-        // Se o bucket ainda não existir no projeto Supabase, cria como público e tenta novamente
-        if (uploadError) {
-          try {
-            await client.storage.createBucket(bucket, { public: true });
-            await client.storage.updateBucket(bucket, { public: true });
-            const retry = await client.storage
-              .from(bucket)
-              .upload(filePath, buffer, {
-                contentType: file.type || "image/jpeg",
-                upsert: true,
-              });
-            uploadError = retry.error;
-          } catch {
-            /* segue para fallback */
-          }
-        }
-
-        if (!uploadError) {
-          const publicUrl =
-            client.storage.from(bucket).getPublicUrl(filePath).data.publicUrl;
-          const normalizedUrl =
-            resolveStorageImageUrl(publicUrl, bucket) || publicUrl;
-
-          if (normalizedUrl) {
-            return NextResponse.json({
-              ok: true,
-              url: normalizedUrl,
-              publicUrl: normalizedUrl,
-              storage: "supabase",
-            });
-          }
-        }
+        uploadError = retry.error;
+      } catch {
+        // Mantém uploadError original
       }
     }
 
-    // 2. Fallback em Data URL caso o Supabase Storage não esteja acessível
-    const mime = file.type || "image/jpeg";
-    const dataUrl = `data:${mime};base64,${buffer.toString("base64")}`;
+    if (uploadError) {
+      console.error("Erro no upload do Storage:", uploadError);
+      return NextResponse.json(
+        {
+          ok: false,
+          error: uploadError.message,
+        },
+        { status: 500 }
+      );
+    }
+
+    const {
+      data: { publicUrl },
+    } = client.storage.from(bucket).getPublicUrl(filePath);
 
     return NextResponse.json({
       ok: true,
-      url: dataUrl,
-      publicUrl: dataUrl,
-      storage: "local-data-url",
+      url: publicUrl,
+      publicUrl,
+      filePath,
+      storage: "supabase",
     });
   } catch (err) {
+    console.error("Erro no upload do Storage:", err);
     return NextResponse.json(
       {
         ok: false,

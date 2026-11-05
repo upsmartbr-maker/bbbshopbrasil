@@ -25,6 +25,7 @@ import {
   X,
 } from "lucide-react";
 import { formatBRL, slugify } from "@/lib/utils";
+import { supabase } from "@/lib/supabase";
 import type { ProductWithImages } from "@/types/database";
 
 interface EditableImage {
@@ -143,8 +144,22 @@ export default function AdminProductsPage() {
     );
     setStock(String(product.stock));
     setIsFeatured(Boolean(product.is_featured));
+    const initialImgs =
+      product.product_images && product.product_images.length > 0
+        ? product.product_images
+        : product.image_url
+          ? [
+              {
+                id: `main-${product.id}`,
+                product_id: product.id,
+                image_url: product.image_url,
+                order_index: 0,
+              },
+            ]
+          : [];
+
     setImages(
-      (product.product_images ?? []).slice(0, 8).map((img, idx) => ({
+      initialImgs.slice(0, 8).map((img, idx) => ({
         id: img.id || `img-${idx}`,
         image_url: img.image_url,
         order_index: idx,
@@ -181,7 +196,7 @@ export default function AdminProductsPage() {
     setDescription(next);
   };
 
-  // Upload múltiplo para Supabase Storage (até 8 imagens por produto)
+  // Upload múltiplo direto para o bucket 'products' do Supabase Storage (até 8 imagens por produto)
   const handleFilesSelected = async (
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
@@ -202,19 +217,36 @@ export default function AdminProductsPage() {
     try {
       const uploaded: EditableImage[] = [];
       for (const file of filesToUpload) {
-        const fd = new FormData();
-        fd.append("file", file);
-        fd.append("bucket", "products");
+        // Nome do arquivo sem espaços ou caracteres especiais
+        const cleanFileName = file.name
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, "_")
+          .replace(/[^a-zA-Z0-9._-]/g, "");
+        const filePath = `${Date.now()}-${cleanFileName}`;
 
-        const res = await fetch("/api/admin/upload", {
-          method: "POST",
-          body: fd,
-        });
-        const data = await res.json();
-        if (res.ok && data?.url) {
+        const { error: uploadError } = await supabase.storage
+          .from("products")
+          .upload(filePath, file, {
+            cacheControl: "3600",
+            upsert: true,
+          });
+
+        if (uploadError) {
+          console.error("Erro no upload do Storage:", uploadError);
+          alert("Erro ao enviar imagem: " + uploadError.message);
+          setErrorMsg("Erro ao enviar imagem: " + uploadError.message);
+          return;
+        }
+
+        const {
+          data: { publicUrl },
+        } = supabase.storage.from("products").getPublicUrl(filePath);
+
+        if (publicUrl) {
           uploaded.push({
             id: `up-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-            image_url: data.url,
+            image_url: publicUrl,
             order_index: images.length + uploaded.length,
           });
         }
@@ -228,8 +260,14 @@ export default function AdminProductsPage() {
           }))
         );
       }
-    } catch {
-      setErrorMsg("Erro ao enviar imagens para o Supabase Storage.");
+    } catch (err) {
+      console.error("Erro no upload do Storage:", err);
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Erro ao enviar imagens para o Supabase Storage.";
+      alert("Erro ao enviar imagem: " + message);
+      setErrorMsg("Erro ao enviar imagem: " + message);
     } finally {
       setUploadingImages(false);
       e.target.value = "";
@@ -315,6 +353,8 @@ export default function AdminProductsPage() {
       });
     }
 
+    const primaryImageUrl = finalImages[0]?.image_url ?? null;
+
     setSaving(true);
     try {
       const res = await fetch("/api/admin/products", {
@@ -329,6 +369,7 @@ export default function AdminProductsPage() {
           compare_at_price: parsedCompare,
           is_featured: isFeatured,
           stock: parsedStock,
+          image_url: primaryImageUrl,
           images: finalImages.slice(0, 8).map((img, idx) => ({
             id: img.id,
             image_url: img.image_url,

@@ -1,5 +1,9 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
+const DEFAULT_SUPABASE_URL = "https://xfaxxdmjxwfyfxylzepf.supabase.co";
+const DEFAULT_SUPABASE_ANON_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhmYXh4ZG1qeHdmeWZ4eWx6ZXBmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM4NDczNDMsImV4cCI6MjEwOTQyMzM0M30.K7Y8LOteaGSdy52o2rJMpKUlrtjxlGwRC2GMf3qEag4";
+
 function normalizeSupabaseUrl(raw: string): string {
   return raw
     .trim()
@@ -7,10 +11,18 @@ function normalizeSupabaseUrl(raw: string): string {
     .replace(/\/+$/, "");
 }
 
-const supabaseUrl = normalizeSupabaseUrl(
-  process.env.NEXT_PUBLIC_SUPABASE_URL ?? ""
-);
-const supabaseAnonKey = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "").trim();
+const rawEnvUrl =
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||
+  process.env.SUPABASE_URL ||
+  DEFAULT_SUPABASE_URL;
+
+const supabaseUrl = normalizeSupabaseUrl(rawEnvUrl) || DEFAULT_SUPABASE_URL;
+
+const supabaseAnonKey = (
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+  process.env.SUPABASE_ANON_KEY ||
+  DEFAULT_SUPABASE_ANON_KEY
+).trim();
 
 export function isSupabaseConfigured(): boolean {
   return Boolean(
@@ -21,11 +33,10 @@ export function isSupabaseConfigured(): boolean {
 
 /**
  * Client público (browser e server components).
- * Sujeito às policies de RLS — somente leitura de catálogo/banners.
  */
 export const supabase: SupabaseClient = createClient(
-  supabaseUrl || "http://localhost:54321",
-  supabaseAnonKey || "public-anon-key-not-configured",
+  supabaseUrl,
+  supabaseAnonKey,
   { auth: { persistSession: false } }
 );
 

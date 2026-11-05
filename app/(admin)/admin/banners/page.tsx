@@ -14,6 +14,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
+import { supabase } from "@/lib/supabase";
 import type { Banner } from "@/types/database";
 
 export default function AdminBannersPage() {
@@ -93,22 +94,42 @@ export default function AdminBannersPage() {
     setErrorMsg(null);
 
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      fd.append("bucket", "banners");
+      const cleanFileName = file.name
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/\s+/g, "_")
+        .replace(/[^a-zA-Z0-9._-]/g, "");
+      const filePath = `${Date.now()}-${cleanFileName}`;
 
-      const res = await fetch("/api/admin/upload", {
-        method: "POST",
-        body: fd,
-      });
-      const data = await res.json();
-      if (res.ok && data?.url) {
-        setImageUrl(data.url);
-      } else {
-        setErrorMsg(data.error || "Falha ao enviar imagem do banner.");
+      const { error: uploadError } = await supabase.storage
+        .from("banners")
+        .upload(filePath, file, {
+          cacheControl: "3600",
+          upsert: true,
+        });
+
+      if (uploadError) {
+        console.error("Erro no upload do Storage:", uploadError);
+        alert("Erro ao enviar imagem: " + uploadError.message);
+        setErrorMsg("Erro ao enviar imagem: " + uploadError.message);
+        return;
       }
-    } catch {
-      setErrorMsg("Erro ao enviar imagem para o Supabase Storage.");
+
+      const {
+        data: { publicUrl },
+      } = supabase.storage.from("banners").getPublicUrl(filePath);
+
+      if (publicUrl) {
+        setImageUrl(publicUrl);
+      }
+    } catch (err) {
+      console.error("Erro no upload do Storage:", err);
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Erro ao enviar imagem para o Supabase Storage.";
+      alert("Erro ao enviar imagem: " + message);
+      setErrorMsg("Erro ao enviar imagem: " + message);
     } finally {
       setUploading(false);
       e.target.value = "";
