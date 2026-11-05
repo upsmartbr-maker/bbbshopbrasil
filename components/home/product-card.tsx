@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { ShoppingBag } from "lucide-react";
 import { useCart } from "@/components/cart/cart-provider";
@@ -17,31 +16,52 @@ export function ProductCard({ product }: { product: ProductWithImages }) {
   const router = useRouter();
   const { addItem, open } = useCart();
 
-  const images = React.useMemo(() => {
-    const raw = Array.isArray(product.product_images)
-      ? product.product_images
-      : [];
-    return raw
-      .map((img, idx) => ({
-        id: img.id || `${product.id}-img-${idx}`,
-        url: resolveStorageImageUrl(img.image_url, "products"),
-        order_index: typeof img.order_index === "number" ? img.order_index : idx,
-      }))
-      .filter((img): img is { id: string; url: string; order_index: number } =>
-        Boolean(img.url)
-      )
-      .sort((a, b) => a.order_index - b.order_index)
-      .slice(0, 8);
-  }, [product.id, product.product_images]);
+  // Prioridade exata para a imagem principal do produto
+  const firstArrayImg = Array.isArray(product.images)
+    ? typeof product.images[0] === "string"
+      ? product.images[0]
+      : product.images[0]?.image_url
+    : undefined;
+
+  const mainImageRaw =
+    product.product_images?.[0]?.image_url ||
+    product.image_url ||
+    firstArrayImg ||
+    null;
+
+  const mainImage = resolveStorageImageUrl(mainImageRaw, "products");
+
+  const galleryImages = React.useMemo(() => {
+    const list: Array<{ id: string; url: string }> = [];
+
+    if (Array.isArray(product.product_images) && product.product_images.length > 0) {
+      const sorted = [...product.product_images].sort(
+        (a, b) => (a.order_index ?? 0) - (b.order_index ?? 0)
+      );
+      sorted.forEach((img, idx) => {
+        const resolved = resolveStorageImageUrl(img.image_url, "products");
+        if (resolved) {
+          list.push({
+            id: img.id || `${product.id}-img-${idx}`,
+            url: resolved,
+          });
+        }
+      });
+    } else if (mainImage) {
+      list.push({ id: `${product.id}-main`, url: mainImage });
+    }
+
+    return list.slice(0, 8);
+  }, [product.id, product.product_images, mainImage]);
 
   const [active, setActive] = React.useState(0);
-  const [failedUrls, setFailedUrls] = React.useState<Record<string, boolean>>({});
+  const [imgLoadFailed, setImgLoadFailed] = React.useState(false);
 
-  const activeUrl = images[active]?.url ?? images[0]?.url ?? null;
-  const displayUrl =
-    activeUrl && !failedUrls[activeUrl] ? activeUrl : FALLBACK_PRODUCT_IMAGE;
-  const isUnoptimized =
-    displayUrl.startsWith("data:") || displayUrl.startsWith("blob:");
+  const selectedImageUrl = galleryImages[active]?.url || mainImage;
+
+  React.useEffect(() => {
+    setImgLoadFailed(false);
+  }, [selectedImageUrl]);
 
   const hasDiscount =
     product.compare_at_price !== null &&
@@ -59,25 +79,30 @@ export function ProductCard({ product }: { product: ProductWithImages }) {
     slug: product.slug,
     name: product.name,
     price: product.price,
-    image: images[0]?.url ?? FALLBACK_PRODUCT_IMAGE,
+    image: selectedImageUrl ?? FALLBACK_PRODUCT_IMAGE,
   };
 
   return (
     <article className="group flex flex-col overflow-hidden rounded-xl border border-nero/10 bg-white transition-shadow hover:shadow-xl">
       <div className="relative aspect-square overflow-hidden bg-marmo">
-        <Image
-          src={displayUrl}
-          alt={product.name}
-          fill
-          unoptimized={isUnoptimized}
-          sizes="(min-width: 1024px) 25vw, (min-width: 640px) 50vw, 100vw"
-          onError={() => {
-            if (activeUrl) {
-              setFailedUrls((prev) => ({ ...prev, [activeUrl]: true }));
-            }
-          }}
-          className="object-cover transition-transform duration-500 group-hover:scale-105"
-        />
+        {selectedImageUrl && !imgLoadFailed ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={selectedImageUrl}
+            alt={product.name}
+            loading="lazy"
+            onError={() => setImgLoadFailed(true)}
+            className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+          />
+        ) : (
+          // Apenas quando não houver nenhuma imagem cadastrada (0/8 fotos), exibe o placeholder dourado da BBB Shop Brasil
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={FALLBACK_PRODUCT_IMAGE}
+            alt={product.name}
+            className="h-full w-full object-cover"
+          />
+        )}
 
         {hasDiscount && (
           <span className="absolute left-3 top-3 rounded-md bg-terracotta px-2.5 py-1 text-xs font-bold uppercase tracking-wider text-white">
@@ -91,46 +116,34 @@ export function ProductCard({ product }: { product: ProductWithImages }) {
         )}
       </div>
 
-      {images.length > 1 && (
+      {galleryImages.length > 1 && (
         <ul
           className="flex flex-wrap gap-2 px-4 pt-3"
           aria-label="Fotos do produto"
         >
-          {images.slice(0, 4).map((img, i) => {
-            const thumbSrc = failedUrls[img.url]
-              ? FALLBACK_PRODUCT_IMAGE
-              : img.url;
-            const thumbUnopt =
-              thumbSrc.startsWith("data:") || thumbSrc.startsWith("blob:");
-
-            return (
-              <li key={img.id}>
-                <button
-                  type="button"
-                  onMouseEnter={() => setActive(i)}
-                  onFocus={() => setActive(i)}
-                  onClick={() => setActive(i)}
-                  aria-label={`Ver foto ${i + 1}`}
-                  aria-pressed={i === active}
-                  className={`relative h-12 w-12 overflow-hidden rounded-md border-2 ${
-                    i === active ? "border-champagne" : "border-transparent"
-                  }`}
-                >
-                  <Image
-                    src={thumbSrc}
-                    alt=""
-                    fill
-                    unoptimized={thumbUnopt}
-                    sizes="48px"
-                    onError={() =>
-                      setFailedUrls((prev) => ({ ...prev, [img.url]: true }))
-                    }
-                    className="object-cover"
-                  />
-                </button>
-              </li>
-            );
-          })}
+          {galleryImages.slice(0, 4).map((img, i) => (
+            <li key={img.id}>
+              <button
+                type="button"
+                onMouseEnter={() => setActive(i)}
+                onFocus={() => setActive(i)}
+                onClick={() => setActive(i)}
+                aria-label={`Ver foto ${i + 1}`}
+                aria-pressed={i === active}
+                className={`relative h-12 w-12 overflow-hidden rounded-md border-2 ${
+                  i === active ? "border-champagne" : "border-transparent"
+                }`}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={img.url}
+                  alt=""
+                  loading="lazy"
+                  className="h-full w-full object-cover"
+                />
+              </button>
+            </li>
+          ))}
         </ul>
       )}
 

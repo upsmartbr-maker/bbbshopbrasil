@@ -289,6 +289,11 @@ export default function AdminProductsPage() {
     e.preventDefault();
     setErrorMsg(null);
 
+    if (uploadingImages) {
+      setErrorMsg("Aguarde a conclusão do envio das imagens antes de salvar.");
+      return;
+    }
+
     const parsedPrice = Number(String(price).replace(",", "."));
     const parsedCompare = compareAtPrice
       ? Number(String(compareAtPrice).replace(",", "."))
@@ -298,6 +303,16 @@ export default function AdminProductsPage() {
     if (!name.trim() || Number.isNaN(parsedPrice) || parsedPrice <= 0) {
       setErrorMsg("Preencha o nome do produto e um preço de venda válido.");
       return;
+    }
+
+    // Se o usuário digitou/colou uma URL no campo de imagem sem clicar em "Adicionar URL", inclui automaticamente
+    const finalImages = [...images];
+    if (imageUrlInput.trim() && finalImages.length < 8) {
+      finalImages.push({
+        id: `url-${Date.now()}`,
+        image_url: imageUrlInput.trim(),
+        order_index: finalImages.length,
+      });
     }
 
     setSaving(true);
@@ -314,7 +329,7 @@ export default function AdminProductsPage() {
           compare_at_price: parsedCompare,
           is_featured: isFeatured,
           stock: parsedStock,
-          images: images.slice(0, 8).map((img, idx) => ({
+          images: finalImages.slice(0, 8).map((img, idx) => ({
             id: img.id,
             image_url: img.image_url,
             order_index: idx,
@@ -1004,14 +1019,16 @@ export default function AdminProductsPage() {
                 </button>
                 <button
                   type="submit"
-                  disabled={saving}
+                  disabled={saving || uploadingImages}
                   className="h-11 rounded-xl bg-slate-900 px-6 text-xs font-semibold uppercase tracking-wider text-white shadow-xs hover:bg-slate-800 disabled:opacity-50"
                 >
-                  {saving
-                    ? "Salvando..."
-                    : editingId
-                      ? "Salvar Alterações"
-                      : "Criar Produto"}
+                  {uploadingImages
+                    ? "Enviando fotos..."
+                    : saving
+                      ? "Salvando..."
+                      : editingId
+                        ? "Salvar Alterações"
+                        : "Criar Produto"}
                 </button>
               </div>
             </form>

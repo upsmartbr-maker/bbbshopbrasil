@@ -1,6 +1,9 @@
 import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
 import { getServerSupabaseClient, isSupabaseConfigured } from "@/lib/supabase";
+import { resolveStorageImageUrl } from "@/lib/utils";
+
+export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
@@ -27,21 +30,41 @@ export async function POST(request: Request) {
     if (isSupabaseConfigured()) {
       const client = getServerSupabaseClient();
       if (client) {
-        const { error: uploadError } = await client.storage
+        let { error: uploadError } = await client.storage
           .from(bucket)
           .upload(filePath, buffer, {
             contentType: file.type || "image/jpeg",
             upsert: true,
           });
 
+        // Se o bucket ainda não existir no projeto Supabase, cria como público e tenta novamente
+        if (uploadError) {
+          try {
+            await client.storage.createBucket(bucket, { public: true });
+            await client.storage.updateBucket(bucket, { public: true });
+            const retry = await client.storage
+              .from(bucket)
+              .upload(filePath, buffer, {
+                contentType: file.type || "image/jpeg",
+                upsert: true,
+              });
+            uploadError = retry.error;
+          } catch {
+            /* segue para fallback */
+          }
+        }
+
         if (!uploadError) {
-          const { data: pub } = client.storage
-            .from(bucket)
-            .getPublicUrl(filePath);
-          if (pub?.publicUrl) {
+          const publicUrl =
+            client.storage.from(bucket).getPublicUrl(filePath).data.publicUrl;
+          const normalizedUrl =
+            resolveStorageImageUrl(publicUrl, bucket) || publicUrl;
+
+          if (normalizedUrl) {
             return NextResponse.json({
               ok: true,
-              url: pub.publicUrl,
+              url: normalizedUrl,
+              publicUrl: normalizedUrl,
               storage: "supabase",
             });
           }
@@ -49,13 +72,14 @@ export async function POST(request: Request) {
       }
     }
 
-    // 2. Fallback em Data URL caso o Supabase Storage ainda não esteja configurado no .env.local
+    // 2. Fallback em Data URL caso o Supabase Storage não esteja acessível
     const mime = file.type || "image/jpeg";
     const dataUrl = `data:${mime};base64,${buffer.toString("base64")}`;
 
     return NextResponse.json({
       ok: true,
       url: dataUrl,
+      publicUrl: dataUrl,
       storage: "local-data-url",
     });
   } catch (err) {
@@ -71,4 +95,3 @@ export async function POST(request: Request) {
     );
   }
 }
-

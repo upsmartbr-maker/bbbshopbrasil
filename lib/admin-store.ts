@@ -24,7 +24,6 @@ const STORAGE_STATE_PATH = "_store/catalog-v1.json";
 
 const globalForAdmin = globalThis as unknown as {
   __bbbAdminStore?: LocalMemoryStore;
-  __bbbStorageHydrated?: boolean;
 };
 
 function createInitialStore(): LocalMemoryStore {
@@ -118,9 +117,103 @@ export function getLocalStore(): LocalMemoryStore {
 }
 
 /**
- * Sincroniza o estado com um arquivo JSON no Supabase Storage ('products/_store/catalog-v1.json')
- * para garantir persistência em nuvem na Vercel mesmo quando as tabelas SQL ainda não foram criadas.
+ * Extrai e normaliza todas as imagens de um registro de produto vindo do Supabase,
+ * suportando `product.product_images`, `product.image_url` e `product.images`.
  */
+export function normalizeProductRecord(
+  raw: ProductWithImages & {
+    image_url?: string | null;
+    images?: Array<string | { image_url?: string; url?: string }> | null;
+  }
+): ProductWithImages {
+  const collected: ProductImage[] = [];
+
+  if (Array.isArray(raw.product_images) && raw.product_images.length > 0) {
+    raw.product_images.forEach((img, idx) => {
+      const candidate =
+        img?.image_url ||
+        (img as unknown as { url?: string })?.url ||
+        "";
+      const resolved = resolveStorageImageUrl(candidate, "products");
+      if (resolved) {
+        collected.push({
+          id: img.id || `img-${raw.id}-${idx}`,
+          product_id: img.product_id || String(raw.id),
+          image_url: resolved,
+          order_index:
+            typeof img.order_index === "number" ? img.order_index : idx,
+        });
+      }
+    });
+  }
+
+  if (collected.length === 0 && Array.isArray(raw.images)) {
+    raw.images.forEach((entry, idx) => {
+      const candidate =
+        typeof entry === "string"
+          ? entry
+          : entry?.image_url || entry?.url || "";
+      const resolved = resolveStorageImageUrl(candidate, "products");
+      if (resolved) {
+        collected.push({
+          id: `arr-${raw.id}-${idx}`,
+          product_id: String(raw.id),
+          image_url: resolved,
+          order_index: idx,
+        });
+      }
+    });
+  }
+
+  if (collected.length === 0 && typeof raw.image_url === "string" && raw.image_url.trim()) {
+    const resolved = resolveStorageImageUrl(raw.image_url, "products");
+    if (resolved) {
+      collected.push({
+        id: `single-${raw.id}-0`,
+        product_id: String(raw.id),
+        image_url: resolved,
+        order_index: 0,
+      });
+    }
+  }
+
+  collected.sort((a, b) => a.order_index - b.order_index);
+
+  return {
+    ...raw,
+    id: String(raw.id),
+    name: String(raw.name ?? ""),
+    slug: String(raw.slug || slugify(String(raw.name ?? "produto"))),
+    description: raw.description ?? null,
+    price: Number(raw.price ?? 0),
+    compare_at_price:
+      raw.compare_at_price !== null && raw.compare_at_price !== undefined
+        ? Number(raw.compare_at_price)
+        : null,
+    is_featured:
+      raw.is_featured === undefined || raw.is_featured === null
+        ? true
+        : Boolean(raw.is_featured),
+    stock: typeof raw.stock === "number" ? raw.stock : Number(raw.stock ?? 10),
+    created_at: String(raw.created_at || new Date().toISOString()),
+    image_url: collected[0]?.image_url ?? raw.image_url ?? null,
+    product_images: collected,
+  };
+}
+
+function normalizeBannerRecord(raw: Banner): Banner {
+  return {
+    ...raw,
+    image_url:
+      resolveStorageImageUrl(raw.image_url, "banners") || raw.image_url || "",
+    is_active:
+      raw.is_active === undefined || raw.is_active === null
+        ? true
+        : Boolean(raw.is_active),
+    order_index: Number(raw.order_index ?? 1),
+  };
+}
+
 async function readCloudFallbackStore(): Promise<LocalMemoryStore> {
   const local = getLocalStore();
   if (!isSupabaseConfigured()) return local;
@@ -149,7 +242,6 @@ async function readCloudFallbackStore(): Promise<LocalMemoryStore> {
         if (parsed.settings) {
           local.settings = { ...local.settings, ...parsed.settings, id: 1 };
         }
-        globalForAdmin.__bbbStorageHydrated = true;
       }
     }
   } catch {
@@ -176,43 +268,6 @@ async function writeCloudFallbackStore(store: LocalMemoryStore): Promise<void> {
   } catch {
     /* ignore */
   }
-}
-
-function normalizeProductRecord(raw: ProductWithImages): ProductWithImages {
-  const rawImages = Array.isArray(raw.product_images) ? raw.product_images : [];
-  const normalizedImages: ProductImage[] = rawImages
-    .map((img, idx) => {
-      const resolvedUrl = resolveStorageImageUrl(img.image_url, "products");
-      return {
-        id: img.id || `img-${raw.id}-${idx}`,
-        product_id: img.product_id || raw.id,
-        image_url: resolvedUrl || img.image_url || "",
-        order_index: typeof img.order_index === "number" ? img.order_index : idx,
-      };
-    })
-    .filter((img) => Boolean(img.image_url))
-    .sort((a, b) => a.order_index - b.order_index);
-
-  return {
-    ...raw,
-    price: Number(raw.price ?? 0),
-    compare_at_price:
-      raw.compare_at_price !== null && raw.compare_at_price !== undefined
-        ? Number(raw.compare_at_price)
-        : null,
-    is_featured: raw.is_featured === undefined || raw.is_featured === null ? true : Boolean(raw.is_featured),
-    stock: typeof raw.stock === "number" ? raw.stock : Number(raw.stock ?? 10),
-    product_images: normalizedImages,
-  };
-}
-
-function normalizeBannerRecord(raw: Banner): Banner {
-  return {
-    ...raw,
-    image_url: resolveStorageImageUrl(raw.image_url, "banners") || raw.image_url || "",
-    is_active: raw.is_active === undefined || raw.is_active === null ? true : Boolean(raw.is_active),
-    order_index: Number(raw.order_index ?? 1),
-  };
 }
 
 // ============================================================================
@@ -302,7 +357,7 @@ export async function adminUpdateSettings(
           );
         }
       } catch {
-        // Mantém salvo no cloud fallback store
+        /* mantido no cloud fallback */
       }
     }
   }
@@ -390,16 +445,36 @@ export async function adminListProducts(): Promise<ProductWithImages[]> {
   try {
     const { data, error } = await client
       .from("products")
-      .select(
-        "id, name, slug, description, price, compare_at_price, is_featured, stock, created_at, product_images (id, product_id, image_url, order_index)"
-      )
+      .select("*, product_images(*)")
       .order("created_at", { ascending: false });
 
     if (error || !data || data.length === 0) {
       return store.products.map(normalizeProductRecord);
     }
 
-    return (data as ProductWithImages[]).map(normalizeProductRecord);
+    // Caso algum produto no banco tenha `product_images` vazio por bloqueio de RLS na tabela filha,
+    // recupera também as imagens salvas no backup do Supabase Storage para aquele id/slug.
+    const backupById = new Map<string, ProductImage[]>();
+    const backupBySlug = new Map<string, ProductImage[]>();
+    for (const p of store.products) {
+      if (p.product_images?.length) {
+        backupById.set(p.id, p.product_images);
+        backupBySlug.set(p.slug, p.product_images);
+      }
+    }
+
+    return (data as ProductWithImages[]).map((raw) => {
+      const normalized = normalizeProductRecord(raw);
+      if (normalized.product_images.length === 0) {
+        const recovered =
+          backupById.get(normalized.id) ?? backupBySlug.get(normalized.slug);
+        if (recovered && recovered.length > 0) {
+          normalized.product_images = recovered;
+          normalized.image_url = recovered[0]?.image_url ?? null;
+        }
+      }
+      return normalized;
+    });
   } catch {
     return store.products.map(normalizeProductRecord);
   }
@@ -442,6 +517,8 @@ export async function adminSaveProduct(
     input.is_featured === undefined || input.is_featured === null
       ? true
       : Boolean(input.is_featured);
+
+  let savedInDbId: string | undefined;
 
   if (isSupabaseConfigured()) {
     const client = getServerSupabaseClient();
@@ -487,55 +564,73 @@ export async function adminSaveProduct(
         }
 
         if (productId) {
+          savedInDbId = productId;
+
+          // Tenta atualizar image_url na tabela products caso a coluna exista no schema
+          if (cleanImages[0]?.image_url) {
+            await client
+              .from("products")
+              .update({ image_url: cleanImages[0].image_url })
+              .eq("id", productId);
+          }
+
+          // Sincroniza a tabela product_images
           await client
             .from("product_images")
             .delete()
             .eq("product_id", productId);
+
           if (cleanImages.length > 0) {
-            await client.from("product_images").insert(
-              cleanImages.map((img, idx) => ({
-                product_id: productId,
-                image_url: img.image_url,
-                order_index: idx,
-              }))
-            );
-          }
+            const { error: imgErr } = await client
+              .from("product_images")
+              .insert(
+                cleanImages.map((img, idx) => ({
+                  product_id: productId,
+                  image_url: img.image_url,
+                  order_index: idx,
+                }))
+              );
 
-          const { data: fullProduct } = await client
-            .from("products")
-            .select(
-              "id, name, slug, description, price, compare_at_price, is_featured, stock, created_at, product_images (id, product_id, image_url, order_index)"
-            )
-            .eq("id", productId)
-            .single();
-
-          if (fullProduct) {
-            return normalizeProductRecord(fullProduct as ProductWithImages);
+            if (imgErr) {
+              // Fallback caso a tabela product_images não possua a coluna order_index
+              await client.from("product_images").insert(
+                cleanImages.map((img) => ({
+                  product_id: productId,
+                  image_url: img.image_url,
+                }))
+              );
+            }
           }
         }
       } catch (err) {
         console.warn(
-          "[adminSaveProduct] Tabela SQL indisponível, persistindo no Supabase Storage JSON store:",
+          "[adminSaveProduct] Aviso ao gravar em tabelas SQL, mantendo sincronizado no Storage JSON:",
           err instanceof Error ? err.message : err
         );
       }
     }
   }
 
-  // Persistência garantida (memória + Supabase Storage JSON)
-  const existingIdx = input.id
-    ? store.products.findIndex((p) => p.id === input.id)
+  // Salva SEMPRE também no store + Supabase Storage JSON para nunca perder o vínculo das fotos
+  const targetId = savedInDbId || input.id;
+  const existingIdx = targetId
+    ? store.products.findIndex(
+        (p) => p.id === targetId || p.slug === cleanSlug
+      )
     : -1;
-  const id = existingIdx >= 0 ? store.products[existingIdx].id : randomUUID();
+  const finalId =
+    savedInDbId ||
+    (existingIdx >= 0 ? store.products[existingIdx].id : randomUUID());
+
   const productImages: ProductImage[] = cleanImages.map((img, idx) => ({
     id: img.id || randomUUID(),
-    product_id: id,
+    product_id: finalId,
     image_url: img.image_url,
     order_index: idx,
   }));
 
   const saved: ProductWithImages = normalizeProductRecord({
-    id,
+    id: finalId,
     name: cleanName,
     slug: cleanSlug,
     description: input.description ?? null,
@@ -550,6 +645,7 @@ export async function adminSaveProduct(
       existingIdx >= 0
         ? store.products[existingIdx].created_at
         : new Date().toISOString(),
+    image_url: productImages[0]?.image_url ?? null,
     product_images: productImages,
   });
 

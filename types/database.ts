@@ -40,6 +40,8 @@ export interface Product {
   is_featured: boolean;
   stock: number;
   created_at: string;
+  image_url?: string | null;
+  images?: Array<string | { image_url?: string; url?: string }> | null;
 }
 
 export interface ProductImage {
