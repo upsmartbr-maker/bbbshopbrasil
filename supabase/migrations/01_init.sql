@@ -44,8 +44,12 @@ create table if not exists public.products (
   compare_at_price numeric(10,2) check (compare_at_price is null or compare_at_price >= 0),
   is_featured boolean not null default false,
   stock integer not null default 0 check (stock >= 0),
+  image_url text,
+  variants jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now()
 );
+alter table public.products add column if not exists image_url text;
+alter table public.products add column if not exists variants jsonb default '[]'::jsonb;
 create index if not exists idx_products_featured on public.products (is_featured, created_at desc);
 
 -- ---------------------------------------------------------------------

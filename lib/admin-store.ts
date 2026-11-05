@@ -4,6 +4,7 @@ import { getServerSupabaseClient, isSupabaseConfigured } from "@/lib/supabase";
 import { resolveStorageImageUrl, slugify } from "@/lib/utils";
 import type {
   Banner,
+  ColorVariant,
   GatewayName,
   Order,
   OrderStatus,
@@ -174,6 +175,44 @@ export function normalizeProductRecord(
     }
   }
 
+  const normalizedVariants: ColorVariant[] = Array.isArray(raw.variants)
+    ? raw.variants
+        .filter(
+          (v) => v && typeof v.name === "string" && v.name.trim().length > 0
+        )
+        .map((v) => ({
+          name: v.name.trim(),
+          hex:
+            typeof v.hex === "string" &&
+            /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v.hex.trim())
+              ? v.hex.trim()
+              : "#1A1A1A",
+          images: Array.isArray(v.images)
+            ? v.images
+                .map((u) => resolveStorageImageUrl(u, "products"))
+                .filter((u): u is string => Boolean(u))
+            : [],
+        }))
+    : [];
+
+  if (collected.length === 0 && normalizedVariants.length > 0) {
+    normalizedVariants.forEach((v) => {
+      v.images.forEach((imgUrl) => {
+        if (
+          collected.length < 8 &&
+          !collected.some((c) => c.image_url === imgUrl)
+        ) {
+          collected.push({
+            id: `var-${raw.id}-${collected.length}`,
+            product_id: String(raw.id),
+            image_url: imgUrl,
+            order_index: collected.length,
+          });
+        }
+      });
+    });
+  }
+
   collected.sort((a, b) => a.order_index - b.order_index);
 
   return {
@@ -195,6 +234,7 @@ export function normalizeProductRecord(
     created_at: String(raw.created_at || new Date().toISOString()),
     image_url: collected[0]?.image_url ?? raw.image_url ?? null,
     product_images: collected,
+    variants: normalizedVariants,
   };
 }
 
@@ -471,25 +511,37 @@ export async function adminListProducts(): Promise<ProductWithImages[]> {
       return [];
     }
 
-    // Caso algum produto no banco tenha `product_images` vazio por bloqueio de RLS na tabela filha,
-    // recupera também as imagens salvas no backup do Supabase Storage para aquele id/slug.
-    const backupById = new Map<string, ProductImage[]>();
-    const backupBySlug = new Map<string, ProductImage[]>();
+    // Caso algum produto no banco tenha `product_images` ou `variants` vazio por schema/RLS,
+    // recupera também os dados salvos no backup do Supabase Storage para aquele id/slug.
+    const backupById = new Map<string, ProductWithImages>();
+    const backupBySlug = new Map<string, ProductWithImages>();
     for (const p of store.products) {
-      if (p.product_images?.length) {
-        backupById.set(p.id, p.product_images);
-        backupBySlug.set(p.slug, p.product_images);
-      }
+      backupById.set(p.id, p);
+      backupBySlug.set(p.slug, p);
     }
 
     return (data as ProductWithImages[]).map((raw) => {
       const normalized = normalizeProductRecord(raw);
-      if (normalized.product_images.length === 0) {
-        const recovered =
-          backupById.get(normalized.id) ?? backupBySlug.get(normalized.slug);
-        if (recovered && recovered.length > 0) {
-          normalized.product_images = recovered;
-          normalized.image_url = recovered[0]?.image_url ?? null;
+      const recovered =
+        backupById.get(normalized.id) ?? backupBySlug.get(normalized.slug);
+
+      if (recovered) {
+        if (
+          normalized.product_images.length === 0 &&
+          recovered.product_images?.length > 0
+        ) {
+          normalized.product_images = recovered.product_images;
+          normalized.image_url =
+            normalized.image_url ||
+            recovered.product_images[0]?.image_url ||
+            null;
+        }
+        if (
+          (!normalized.variants || normalized.variants.length === 0) &&
+          recovered.variants &&
+          recovered.variants.length > 0
+        ) {
+          normalized.variants = recovered.variants;
         }
       }
       return normalized;
@@ -512,6 +564,7 @@ export interface UpsertProductInput {
   stock: number;
   image_url?: string | null;
   images?: Array<{ id?: string; image_url: string; order_index: number }>;
+  variants?: ColorVariant[] | null;
 }
 
 export async function adminSaveProduct(
@@ -521,11 +574,49 @@ export async function adminSaveProduct(
   const cleanName = input.name.trim();
   const cleanSlug =
     slugify(input.slug?.trim() || cleanName) || `produto-${Date.now()}`;
+
+  const cleanVariants: ColorVariant[] = Array.isArray(input.variants)
+    ? input.variants
+        .filter(
+          (v) => v && typeof v.name === "string" && v.name.trim().length > 0
+        )
+        .map((v) => ({
+          name: v.name.trim(),
+          hex:
+            typeof v.hex === "string" &&
+            /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v.hex.trim())
+              ? v.hex.trim()
+              : "#1A1A1A",
+          images: Array.isArray(v.images)
+            ? v.images
+                .map(
+                  (url) => resolveStorageImageUrl(url, "products") || url.trim()
+                )
+                .filter(Boolean)
+            : [],
+        }))
+    : [];
+
   const rawImagesList = [...(input.images ?? [])];
   if (rawImagesList.length === 0 && input.image_url?.trim()) {
     rawImagesList.push({
       image_url: input.image_url.trim(),
       order_index: 0,
+    });
+  }
+  if (rawImagesList.length === 0 && cleanVariants.length > 0) {
+    cleanVariants.forEach((v) => {
+      v.images.forEach((imgUrl) => {
+        if (
+          rawImagesList.length < 8 &&
+          !rawImagesList.some((r) => r.image_url === imgUrl)
+        ) {
+          rawImagesList.push({
+            image_url: imgUrl,
+            order_index: rawImagesList.length,
+          });
+        }
+      });
     });
   }
 
@@ -545,6 +636,7 @@ export async function adminSaveProduct(
 
   const mainImageUrl =
     cleanImages[0]?.image_url ||
+    cleanVariants[0]?.images?.[0] ||
     (input.image_url
       ? resolveStorageImageUrl(input.image_url, "products") || input.image_url
       : null);
@@ -573,6 +665,7 @@ export async function adminSaveProduct(
           is_featured: isFeaturedFlag,
           stock: Math.max(0, Math.floor(Number(input.stock))),
           image_url: mainImageUrl,
+          variants: cleanVariants,
         };
 
         const basePayloadWithoutImageUrl = {
@@ -623,13 +716,17 @@ export async function adminSaveProduct(
         if (productId) {
           savedInDbId = productId;
 
-          // Tenta atualizar image_url na tabela products caso a coluna exista no schema
+          // Tenta atualizar image_url e variants na tabela products caso as colunas existam
           if (mainImageUrl) {
             await client
               .from("products")
               .update({ image_url: mainImageUrl })
               .eq("id", productId);
           }
+          await client
+            .from("products")
+            .update({ variants: cleanVariants })
+            .eq("id", productId);
 
           // Sincroniza a tabela product_images
           await client
@@ -668,7 +765,7 @@ export async function adminSaveProduct(
     }
   }
 
-  // Salva SEMPRE também no store + Supabase Storage JSON para nunca perder o vínculo das fotos
+  // Salva SEMPRE também no store + Supabase Storage JSON para nunca perder o vínculo das fotos e cores
   const targetId = savedInDbId || input.id;
   const existingIdx = targetId
     ? store.products.findIndex(
@@ -702,8 +799,9 @@ export async function adminSaveProduct(
       existingIdx >= 0
         ? store.products[existingIdx].created_at
         : new Date().toISOString(),
-    image_url: productImages[0]?.image_url ?? null,
+    image_url: mainImageUrl ?? productImages[0]?.image_url ?? null,
     product_images: productImages,
+    variants: cleanVariants,
   });
 
   if (existingIdx >= 0) {

@@ -30,6 +30,12 @@ export interface Banner {
   is_active: boolean;
 }
 
+export interface ColorVariant {
+  name: string; // Ex: 'Preto', 'Golden Rose'
+  hex: string; // Ex: '#1A1A1A', '#C58C72'
+  images: string[]; // Lista de URLs das fotos correspondentes àquela cor
+}
+
 export interface Product {
   id: string;
   name: string;
@@ -42,6 +48,7 @@ export interface Product {
   created_at: string;
   image_url?: string | null;
   images?: Array<string | { image_url?: string; url?: string }> | null;
+  variants?: ColorVariant[] | null;
 }
 
 export interface ProductImage {

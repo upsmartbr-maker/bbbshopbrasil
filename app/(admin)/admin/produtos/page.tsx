@@ -26,13 +26,21 @@ import {
 } from "lucide-react";
 import { formatBRL, slugify } from "@/lib/utils";
 import { supabase } from "@/lib/supabase";
-import type { ProductWithImages } from "@/types/database";
+import type { ColorVariant, ProductWithImages } from "@/types/database";
 
 interface EditableImage {
   id: string;
   image_url: string;
   order_index: number;
 }
+
+const COLOR_PRESETS: Array<{ name: string; hex: string }> = [
+  { name: "Preto", hex: "#1A1A1A" },
+  { name: "Golden Rose", hex: "#C58C72" },
+  { name: "Cereja Gourmet", hex: "#9E2A2B" },
+  { name: "Crema Marfim", hex: "#E8DEC8" },
+  { name: "Inox Escovado", hex: "#B8BDC4" },
+];
 
 const PAGE_SIZE = 6;
 
@@ -59,6 +67,12 @@ export default function AdminProductsPage() {
   const [isFeatured, setIsFeatured] = React.useState(true);
   const [images, setImages] = React.useState<EditableImage[]>([]);
   const [imageUrlInput, setImageUrlInput] = React.useState("");
+  const [variants, setVariants] = React.useState<ColorVariant[]>([]);
+  const [newColorName, setNewColorName] = React.useState("");
+  const [newColorHex, setNewColorHex] = React.useState("#1A1A1A");
+  const [uploadingVariantIdx, setUploadingVariantIdx] = React.useState<
+    number | null
+  >(null);
   const [dragIndex, setDragIndex] = React.useState<number | null>(null);
   const [uploadingImages, setUploadingImages] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
@@ -127,6 +141,9 @@ export default function AdminProductsPage() {
     setIsFeatured(true);
     setImages([]);
     setImageUrlInput("");
+    setVariants([]);
+    setNewColorName("");
+    setNewColorHex("#1A1A1A");
     setErrorMsg(null);
     setFormOpen(true);
   };
@@ -165,6 +182,17 @@ export default function AdminProductsPage() {
         order_index: idx,
       }))
     );
+    setVariants(
+      Array.isArray(product.variants)
+        ? product.variants.map((v) => ({
+            name: v.name,
+            hex: v.hex || "#1A1A1A",
+            images: Array.isArray(v.images) ? [...v.images] : [],
+          }))
+        : []
+    );
+    setNewColorName("");
+    setNewColorHex("#1A1A1A");
     setImageUrlInput("");
     setErrorMsg(null);
     setFormOpen(true);
@@ -323,11 +351,157 @@ export default function AdminProductsPage() {
     setDragIndex(null);
   };
 
+  // Gerenciamento de Variações de Cores (variants JSONB)
+  const handleAddColorVariant = (presetName?: string, presetHex?: string) => {
+    const cleanName = (presetName ?? newColorName).trim();
+    const cleanHex = (presetHex ?? newColorHex).trim() || "#1A1A1A";
+    if (!cleanName) {
+      setErrorMsg("Informe o nome da cor (ex: Preto, Golden Rose).");
+      return;
+    }
+    if (
+      variants.some((v) => v.name.toLowerCase() === cleanName.toLowerCase())
+    ) {
+      setErrorMsg(`A cor "${cleanName}" já foi adicionada.`);
+      return;
+    }
+
+    setVariants((prev) => [
+      ...prev,
+      {
+        name: cleanName,
+        hex: /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(cleanHex)
+          ? cleanHex
+          : "#1A1A1A",
+        images: [],
+      },
+    ]);
+    if (!presetName) {
+      setNewColorName("");
+    }
+    setErrorMsg(null);
+  };
+
+  const handleRemoveColorVariant = (variantIdx: number) => {
+    setVariants((prev) => prev.filter((_, idx) => idx !== variantIdx));
+  };
+
+  const handleUpdateVariantMeta = (
+    variantIdx: number,
+    patch: Partial<Pick<ColorVariant, "name" | "hex">>
+  ) => {
+    setVariants((prev) =>
+      prev.map((v, idx) => (idx === variantIdx ? { ...v, ...patch } : v))
+    );
+  };
+
+  const handleToggleVariantImage = (variantIdx: number, imageUrl: string) => {
+    setVariants((prev) =>
+      prev.map((v, idx) => {
+        if (idx !== variantIdx) return v;
+        const exists = v.images.includes(imageUrl);
+        return {
+          ...v,
+          images: exists
+            ? v.images.filter((u) => u !== imageUrl)
+            : [...v.images, imageUrl],
+        };
+      })
+    );
+  };
+
+  const handleUploadVariantFiles = async (
+    variantIdx: number,
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+
+    const filesToUpload = Array.from(fileList).slice(0, 8);
+    setUploadingVariantIdx(variantIdx);
+    setErrorMsg(null);
+
+    try {
+      const uploadedUrls: string[] = [];
+      for (const file of filesToUpload) {
+        const cleanFileName = file.name
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, "_")
+          .replace(/[^a-zA-Z0-9._-]/g, "");
+        const filePath = `${Date.now()}-${cleanFileName}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from("products")
+          .upload(filePath, file, {
+            cacheControl: "3600",
+            upsert: true,
+          });
+
+        if (uploadError) {
+          console.error("Erro no upload do Storage:", uploadError);
+          alert("Erro ao enviar imagem: " + uploadError.message);
+          setErrorMsg("Erro ao enviar imagem: " + uploadError.message);
+          return;
+        }
+
+        const {
+          data: { publicUrl },
+        } = supabase.storage.from("products").getPublicUrl(filePath);
+
+        if (publicUrl) {
+          uploadedUrls.push(publicUrl);
+        }
+      }
+
+      if (uploadedUrls.length > 0) {
+        setVariants((prev) =>
+          prev.map((v, idx) =>
+            idx === variantIdx
+              ? {
+                  ...v,
+                  images: Array.from(new Set([...v.images, ...uploadedUrls])),
+                }
+              : v
+          )
+        );
+
+        // Também sincroniza com a galeria principal do produto se houver espaço (até 8 fotos)
+        setImages((prev) => {
+          const existingUrls = new Set(prev.map((img) => img.image_url));
+          const additions: EditableImage[] = [];
+          for (const url of uploadedUrls) {
+            if (!existingUrls.has(url) && prev.length + additions.length < 8) {
+              additions.push({
+                id: `var-up-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                image_url: url,
+                order_index: prev.length + additions.length,
+              });
+              existingUrls.add(url);
+            }
+          }
+          return [...prev, ...additions].map((img, i) => ({
+            ...img,
+            order_index: i,
+          }));
+        });
+      }
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Erro ao enviar fotos da cor.";
+      alert("Erro ao enviar imagem: " + msg);
+      setErrorMsg("Erro ao enviar imagem: " + msg);
+    } finally {
+      setUploadingVariantIdx(null);
+      e.target.value = "";
+    }
+  };
+
   const handleSaveProduct = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setErrorMsg(null);
 
-    if (uploadingImages) {
+    if (uploadingImages || uploadingVariantIdx !== null) {
       setErrorMsg("Aguarde a conclusão do envio das imagens antes de salvar.");
       return;
     }
@@ -343,6 +517,21 @@ export default function AdminProductsPage() {
       return;
     }
 
+    // Se o usuário digitou uma cor nova nos campos e não clicou em "Adicionar Cor", inclui automaticamente
+    const finalVariants = [...variants];
+    if (
+      newColorName.trim() &&
+      !finalVariants.some(
+        (v) => v.name.toLowerCase() === newColorName.trim().toLowerCase()
+      )
+    ) {
+      finalVariants.push({
+        name: newColorName.trim(),
+        hex: newColorHex.trim() || "#1A1A1A",
+        images: [],
+      });
+    }
+
     // Se o usuário digitou/colou uma URL no campo de imagem sem clicar em "Adicionar URL", inclui automaticamente
     const finalImages = [...images];
     if (imageUrlInput.trim() && finalImages.length < 8) {
@@ -353,7 +542,26 @@ export default function AdminProductsPage() {
       });
     }
 
-    const primaryImageUrl = finalImages[0]?.image_url ?? null;
+    // Caso o produto possua fotos nas variações de cor mas a galeria principal esteja vazia, usa as fotos das cores
+    if (finalImages.length === 0 && finalVariants.length > 0) {
+      for (const v of finalVariants) {
+        for (const url of v.images) {
+          if (
+            finalImages.length < 8 &&
+            !finalImages.some((i) => i.image_url === url)
+          ) {
+            finalImages.push({
+              id: `vimg-${finalImages.length}`,
+              image_url: url,
+              order_index: finalImages.length,
+            });
+          }
+        }
+      }
+    }
+
+    const primaryImageUrl =
+      finalImages[0]?.image_url ?? finalVariants[0]?.images?.[0] ?? null;
 
     setSaving(true);
     try {
@@ -375,6 +583,7 @@ export default function AdminProductsPage() {
             image_url: img.image_url,
             order_index: idx,
           })),
+          variants: finalVariants,
         }),
       });
 
@@ -552,6 +761,23 @@ export default function AdminProductsPage() {
                             <p className="truncate font-mono text-xs text-slate-400">
                               /{product.slug}
                             </p>
+                            {Array.isArray(product.variants) &&
+                              product.variants.length > 0 && (
+                                <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                                  {product.variants.map((v, vIdx) => (
+                                    <span
+                                      key={`${v.name}-${vIdx}`}
+                                      className="inline-flex items-center gap-1 rounded border border-slate-200 bg-[#F8FAFC] px-1.5 py-0.5 text-[10px] font-semibold text-slate-700"
+                                    >
+                                      <span
+                                        style={{ backgroundColor: v.hex }}
+                                        className="h-2.5 w-2.5 rounded-xs border border-black/20"
+                                      />
+                                      {v.name}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
                           </div>
                         </div>
                       </td>
@@ -1043,6 +1269,259 @@ export default function AdminProductsPage() {
                             <ArrowRight className="h-3 w-3" />
                           </button>
                         </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Módulo de Variações de Cores (Nome + Hex + Fotos por Cor) */}
+              <div className="rounded-2xl border border-slate-200 bg-[#F8FAFC] p-5">
+                <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-center">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900">
+                      Variações de Cores e Galeria por Cor ({variants.length})
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Cadastre as cores disponíveis (ex: Preto, Golden Rose) e
+                      associe as fotos específicas de cada cor. Ao selecionar a
+                      cor na vitrine, a galeria troca automaticamente.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Atalhos rápidos de cores da linha BBB Shop Brasil */}
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                    Cores rápidas:
+                  </span>
+                  {COLOR_PRESETS.map((preset) => (
+                    <button
+                      key={preset.name}
+                      type="button"
+                      onClick={() =>
+                        handleAddColorVariant(preset.name, preset.hex)
+                      }
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 shadow-2xs transition hover:border-slate-900"
+                    >
+                      <span
+                        style={{ backgroundColor: preset.hex }}
+                        className="h-3 w-3 rounded-xs border border-black/20"
+                      />
+                      <span>+ {preset.name}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Campos para adicionar nova cor personalizada */}
+                <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-12">
+                  <div className="sm:col-span-5">
+                    <input
+                      type="text"
+                      value={newColorName}
+                      onChange={(e) => setNewColorName(e.target.value)}
+                      placeholder="Nome da cor (ex: Preto, Golden Rose)"
+                      className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3.5 text-xs text-slate-900 focus:border-slate-900 focus:outline-none"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2 sm:col-span-4">
+                    <input
+                      type="color"
+                      value={
+                        /^#[0-9a-fA-F]{6}$/.test(newColorHex)
+                          ? newColorHex
+                          : "#1A1A1A"
+                      }
+                      onChange={(e) => setNewColorHex(e.target.value)}
+                      aria-label="Seletor visual de cor hexadecimal"
+                      className="h-10 w-12 shrink-0 cursor-pointer rounded-xl border border-slate-200 bg-white p-1"
+                    />
+                    <input
+                      type="text"
+                      value={newColorHex}
+                      onChange={(e) => setNewColorHex(e.target.value)}
+                      placeholder="#1A1A1A"
+                      className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 font-mono text-xs uppercase text-slate-800 focus:border-slate-900 focus:outline-none"
+                    />
+                  </div>
+                  <div className="sm:col-span-3">
+                    <button
+                      type="button"
+                      onClick={() => handleAddColorVariant()}
+                      className="inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-xl bg-slate-900 px-4 text-xs font-semibold text-white transition hover:bg-slate-800"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      <span>Adicionar Cor</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Lista de Cores Cadastradas e Fotos Associadas */}
+                {variants.length > 0 && (
+                  <div className="mt-4 space-y-4">
+                    {variants.map((variant, vIdx) => (
+                      <div
+                        key={`${variant.name}-${vIdx}`}
+                        className="rounded-xl border border-slate-200 bg-white p-4 shadow-2xs"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                          <div className="flex flex-wrap items-center gap-2.5">
+                            <input
+                              type="color"
+                              value={
+                                /^#[0-9a-fA-F]{6}$/.test(variant.hex)
+                                  ? variant.hex
+                                  : "#1A1A1A"
+                              }
+                              onChange={(e) =>
+                                handleUpdateVariantMeta(vIdx, {
+                                  hex: e.target.value,
+                                })
+                              }
+                              className="h-8 w-8 cursor-pointer rounded-lg border border-slate-200 p-0.5"
+                            />
+                            <input
+                              type="text"
+                              value={variant.name}
+                              onChange={(e) =>
+                                handleUpdateVariantMeta(vIdx, {
+                                  name: e.target.value,
+                                })
+                              }
+                              className="h-8 rounded-lg border border-slate-200 bg-[#F8FAFC] px-2.5 text-xs font-bold text-slate-900 focus:border-slate-900 focus:bg-white focus:outline-none"
+                            />
+                            <input
+                              type="text"
+                              value={variant.hex}
+                              onChange={(e) =>
+                                handleUpdateVariantMeta(vIdx, {
+                                  hex: e.target.value,
+                                })
+                              }
+                              className="h-8 w-24 rounded-lg border border-slate-200 bg-[#F8FAFC] px-2 font-mono text-xs uppercase text-slate-600 focus:border-slate-900 focus:bg-white focus:outline-none"
+                            />
+                            <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-600">
+                              {variant.images.length}{" "}
+                              {variant.images.length === 1
+                                ? "foto associada"
+                                : "fotos associadas"}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <label className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg bg-slate-900 px-3 text-[11px] font-semibold text-white transition hover:bg-slate-800">
+                              <Upload className="h-3.5 w-3.5" />
+                              <span>
+                                {uploadingVariantIdx === vIdx
+                                  ? "Enviando..."
+                                  : "Subir fotos desta cor"}
+                              </span>
+                              <input
+                                type="file"
+                                accept="image/*"
+                                multiple
+                                disabled={uploadingVariantIdx !== null}
+                                onChange={(e) =>
+                                  handleUploadVariantFiles(vIdx, e)
+                                }
+                                className="hidden"
+                              />
+                            </label>
+
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveColorVariant(vIdx)}
+                              className="inline-flex h-8 items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 text-[11px] font-semibold text-rose-700 hover:bg-rose-100"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              <span>Remover Cor</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Seleção com 1 clique das fotos já enviadas na galeria do produto */}
+                        {images.length > 0 && (
+                          <div className="mt-3">
+                            <p className="text-[11px] font-semibold text-slate-500">
+                              Clique nas fotos da galeria abaixo para vincular /
+                              desvincular da cor{" "}
+                              <strong className="text-slate-800">
+                                {variant.name}
+                              </strong>
+                              :
+                            </p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {images.map((img, iIdx) => {
+                                const isLinked = variant.images.includes(
+                                  img.image_url
+                                );
+                                return (
+                                  <button
+                                    key={`${variant.name}-link-${img.id}-${iIdx}`}
+                                    type="button"
+                                    onClick={() =>
+                                      handleToggleVariantImage(
+                                        vIdx,
+                                        img.image_url
+                                      )
+                                    }
+                                    className={`relative h-14 w-14 overflow-hidden rounded-lg border-2 transition ${
+                                      isLinked
+                                        ? "border-emerald-600 ring-2 ring-emerald-500/30"
+                                        : "border-slate-200 opacity-60 hover:opacity-100"
+                                    }`}
+                                  >
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img
+                                      src={img.image_url}
+                                      alt=""
+                                      className="h-full w-full object-cover"
+                                    />
+                                    {isLinked && (
+                                      <span className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-emerald-600 text-[9px] font-bold text-white">
+                                        ✓
+                                      </span>
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Fotos exclusivas já associadas a esta cor */}
+                        {variant.images.length > 0 && (
+                          <div className="mt-3 border-t border-slate-100 pt-3">
+                            <p className="text-[11px] font-semibold text-slate-500">
+                              Ordem das fotos da cor {variant.name}:
+                            </p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {variant.images.map((url, uIdx) => (
+                                <div
+                                  key={`${url}-${uIdx}`}
+                                  className="relative h-16 w-16 overflow-hidden rounded-lg border border-slate-200 bg-slate-50"
+                                >
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img
+                                    src={url}
+                                    alt=""
+                                    className="h-full w-full object-cover"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handleToggleVariantImage(vIdx, url)
+                                    }
+                                    title="Desvincular foto desta cor"
+                                    className="absolute right-1 top-1 rounded bg-white/90 p-0.5 text-rose-600 shadow-2xs hover:bg-rose-50"
+                                  >
+                                    <X className="h-3 w-3" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

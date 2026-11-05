@@ -42,6 +42,8 @@ export async function POST(request: Request) {
   const product = await adminSaveProduct(body);
   revalidatePath("/");
   revalidatePath("/produtos");
+  revalidatePath(`/produto/${product.slug}`);
+  revalidatePath(`/produtos/${product.slug}`);
   return NextResponse.json({ ok: true, product });
 }
 

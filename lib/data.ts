@@ -86,6 +86,61 @@ export async function getAllProducts(): Promise<ProductWithImages[]> {
     );
 }
 
+export async function getProductBySlug(
+  slugOrId: string
+): Promise<ProductWithImages | null> {
+  const clean = decodeURIComponent(slugOrId).trim().toLowerCase();
+  if (!clean) return null;
+
+  if (isSupabaseConfigured()) {
+    const client = getServerSupabaseClient() ?? supabase;
+    if (client) {
+      try {
+        const { data, error } = await client
+          .from("products")
+          .select("*")
+          .eq("slug", clean)
+          .maybeSingle();
+
+        if (!error && data) {
+          const allFromStore = await adminListProducts();
+          const matchInStore = allFromStore.find(
+            (p) => p.id === String(data.id) || p.slug.toLowerCase() === clean
+          );
+          const normalized = normalizeProductRecord(data as ProductWithImages);
+          if (matchInStore) {
+            if (normalized.product_images.length === 0 && matchInStore.product_images.length > 0) {
+              normalized.product_images = matchInStore.product_images;
+              normalized.image_url =
+                normalized.image_url ||
+                matchInStore.product_images[0]?.image_url ||
+                null;
+            }
+            if (
+              (!normalized.variants || normalized.variants.length === 0) &&
+              matchInStore.variants &&
+              matchInStore.variants.length > 0
+            ) {
+              normalized.variants = matchInStore.variants;
+            }
+          }
+          return normalized;
+        }
+      } catch {
+        // Fallback para busca na lista completa
+      }
+    }
+  }
+
+  const all = await getAllProducts();
+  return (
+    all.find(
+      (p) =>
+        p.slug.toLowerCase() === clean || String(p.id).toLowerCase() === clean
+    ) ?? null
+  );
+}
+
 export async function getBanners(): Promise<Banner[]> {
   const all = await adminListBanners();
   return all.filter((b) => b.is_active !== false);
