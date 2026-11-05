@@ -9,25 +9,37 @@ import { getServerSupabaseClient, isSupabaseConfigured, supabase } from "@/lib/s
 import type { Banner, ProductWithImages, Testimonial } from "@/types/database";
 
 /**
- * Busca os produtos para a vitrine principal da Home usando `.select('*, product_images(*)')`,
- * ordenados por `created_at desc` e mantendo a recuperação automática de imagens.
+ * Busca os produtos diretamente da tabela 'products' no Supabase ordenados por `created_at desc`.
+ * Sem lista estática/mockada: quando não houver produtos cadastrados, retorna [].
  */
 export async function getFeaturedProducts(
   limit = 8
 ): Promise<ProductWithImages[]> {
-  const allFromAdminStore = await adminListProducts();
-
   if (isSupabaseConfigured()) {
     const client = getServerSupabaseClient() ?? supabase;
     if (client) {
       try {
-        const { data, error } = await client
+        let { data, error } = await client
           .from("products")
           .select("*, product_images(*)")
           .order("created_at", { ascending: false })
-          .limit(limit * 2);
+          .limit(limit);
 
-        if (!error && Array.isArray(data) && data.length > 0) {
+        if (error && error.code !== "PGRST205" && error.code !== "42P01") {
+          const simple = await client
+            .from("products")
+            .select("*")
+            .order("created_at", { ascending: false })
+            .limit(limit);
+          data = simple.data as ProductWithImages[] | null;
+          error = simple.error;
+        }
+
+        if (!error && Array.isArray(data)) {
+          if (data.length === 0) {
+            return [];
+          }
+          const allFromAdminStore = await adminListProducts();
           const backupById = new Map(
             allFromAdminStore.map((p) => [p.id, p.product_images])
           );
@@ -35,49 +47,43 @@ export async function getFeaturedProducts(
             allFromAdminStore.map((p) => [p.slug, p.product_images])
           );
 
-          const normalized = data.map((row) => {
+          return data.map((row) => {
             const prod = normalizeProductRecord(row as ProductWithImages);
             if (prod.product_images.length === 0) {
               const recovered =
                 backupById.get(prod.id) ?? backupBySlug.get(prod.slug);
               if (recovered && recovered.length > 0) {
                 prod.product_images = recovered;
-                prod.image_url = recovered[0]?.image_url ?? null;
+                prod.image_url = prod.image_url || recovered[0]?.image_url || null;
               }
             }
             return prod;
           });
-
-          return normalized.slice(0, limit);
         }
       } catch {
-        // Fallback para allFromAdminStore
+        // Continua para adminListProducts caso a tabela SQL não exista no schema cache
       }
     }
   }
 
-  const sorted = [...allFromAdminStore].sort((a, b) => {
-    const aIsCustom = !a.id.startsWith("demo-");
-    const bIsCustom = !b.id.startsWith("demo-");
-    if (aIsCustom !== bIsCustom) return aIsCustom ? -1 : 1;
-    return (
-      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    );
-  });
-
-  return sorted.slice(0, limit);
+  const allFromAdminStore = await adminListProducts();
+  return allFromAdminStore
+    .filter((p) => !String(p.id).startsWith("demo-"))
+    .sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    )
+    .slice(0, limit);
 }
 
 export async function getAllProducts(): Promise<ProductWithImages[]> {
   const all = await adminListProducts();
-  return [...all].sort((a, b) => {
-    const aIsCustom = !a.id.startsWith("demo-");
-    const bIsCustom = !b.id.startsWith("demo-");
-    if (aIsCustom !== bIsCustom) return aIsCustom ? -1 : 1;
-    return (
-      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  return all
+    .filter((p) => !String(p.id).startsWith("demo-"))
+    .sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     );
-  });
 }
 
 export async function getBanners(): Promise<Banner[]> {

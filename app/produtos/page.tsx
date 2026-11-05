@@ -28,9 +28,13 @@ export default async function ProdutosPage({
       </p>
 
       {products.length === 0 ? (
-        <p className="mt-10 text-lg">
-          Nenhum produto encontrado. Tente outro termo de busca.
-        </p>
+        <div className="mt-10 rounded-xl border border-nero/10 bg-white/70 px-6 py-14 text-center">
+          <p className="text-lg font-medium text-nero/80">
+            {q
+              ? "Nenhum produto encontrado. Tente outro termo de busca."
+              : "Nenhum produto cadastrado no momento."}
+          </p>
+        </div>
       ) : (
         <div className="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
           {products.map((p) => (

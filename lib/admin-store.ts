@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { FALLBACK_BANNERS, FALLBACK_PRODUCTS } from "@/lib/fallback";
+import { FALLBACK_BANNERS } from "@/lib/fallback";
 import { getServerSupabaseClient, isSupabaseConfigured } from "@/lib/supabase";
 import { resolveStorageImageUrl, slugify } from "@/lib/utils";
 import type {
@@ -45,10 +45,7 @@ function createInitialStore(): LocalMemoryStore {
       pagseguro_app_id: process.env.PAGSEGURO_APP_ID ?? null,
       pagseguro_app_key: process.env.PAGSEGURO_APP_KEY ?? null,
     },
-    products: FALLBACK_PRODUCTS.map((p) => ({
-      ...p,
-      product_images: [...p.product_images],
-    })),
+    products: [],
     banners: FALLBACK_BANNERS.map((b) => ({ ...b })),
     orders: [
       {
@@ -230,8 +227,10 @@ async function readCloudFallbackStore(): Promise<LocalMemoryStore> {
       const text = await data.text();
       const parsed = JSON.parse(text) as Partial<LocalMemoryStore>;
       if (parsed && typeof parsed === "object") {
-        if (Array.isArray(parsed.products) && parsed.products.length > 0) {
-          local.products = parsed.products.map(normalizeProductRecord);
+        if (Array.isArray(parsed.products)) {
+          local.products = parsed.products
+            .filter((p) => !String(p.id).startsWith("demo-"))
+            .map(normalizeProductRecord);
         }
         if (Array.isArray(parsed.banners) && parsed.banners.length > 0) {
           local.banners = parsed.banners.map(normalizeBannerRecord);
@@ -434,22 +433,42 @@ export function adminRecordLocalOrder(order: Order): void {
 export async function adminListProducts(): Promise<ProductWithImages[]> {
   const store = await readCloudFallbackStore();
   if (!isSupabaseConfigured()) {
-    return store.products.map(normalizeProductRecord);
+    return store.products
+      .filter((p) => !String(p.id).startsWith("demo-"))
+      .map(normalizeProductRecord);
   }
 
   const client = getServerSupabaseClient();
   if (!client) {
-    return store.products.map(normalizeProductRecord);
+    return store.products
+      .filter((p) => !String(p.id).startsWith("demo-"))
+      .map(normalizeProductRecord);
   }
 
   try {
-    const { data, error } = await client
+    let { data, error } = await client
       .from("products")
       .select("*, product_images(*)")
       .order("created_at", { ascending: false });
 
-    if (error || !data || data.length === 0) {
-      return store.products.map(normalizeProductRecord);
+    // Caso a tabela product_images não exista ou não tenha relação FK, consulta apenas products
+    if (error && error.code !== "PGRST205" && error.code !== "42P01") {
+      const fallbackQuery = await client
+        .from("products")
+        .select("*")
+        .order("created_at", { ascending: false });
+      data = fallbackQuery.data as ProductWithImages[] | null;
+      error = fallbackQuery.error;
+    }
+
+    if (error || !Array.isArray(data)) {
+      return store.products
+        .filter((p) => !String(p.id).startsWith("demo-"))
+        .map(normalizeProductRecord);
+    }
+
+    if (data.length === 0) {
+      return [];
     }
 
     // Caso algum produto no banco tenha `product_images` vazio por bloqueio de RLS na tabela filha,
@@ -476,7 +495,9 @@ export async function adminListProducts(): Promise<ProductWithImages[]> {
       return normalized;
     });
   } catch {
-    return store.products.map(normalizeProductRecord);
+    return store.products
+      .filter((p) => !String(p.id).startsWith("demo-"))
+      .map(normalizeProductRecord);
   }
 }
 
@@ -540,42 +561,63 @@ export async function adminSaveProduct(
     if (client) {
       try {
         let productId = input.id;
+        const fullPayload = {
+          name: cleanName,
+          slug: cleanSlug,
+          description: input.description ?? null,
+          price: Number(input.price),
+          compare_at_price:
+            input.compare_at_price && input.compare_at_price > 0
+              ? Number(input.compare_at_price)
+              : null,
+          is_featured: isFeaturedFlag,
+          stock: Math.max(0, Math.floor(Number(input.stock))),
+          image_url: mainImageUrl,
+        };
+
+        const basePayloadWithoutImageUrl = {
+          name: cleanName,
+          slug: cleanSlug,
+          description: input.description ?? null,
+          price: Number(input.price),
+          compare_at_price:
+            input.compare_at_price && input.compare_at_price > 0
+              ? Number(input.compare_at_price)
+              : null,
+          is_featured: isFeaturedFlag,
+          stock: Math.max(0, Math.floor(Number(input.stock))),
+        };
+
         if (productId && !productId.startsWith("demo-")) {
-          const { error } = await client
+          const { error: errWithImg } = await client
             .from("products")
-            .update({
-              name: cleanName,
-              slug: cleanSlug,
-              description: input.description ?? null,
-              price: Number(input.price),
-              compare_at_price:
-                input.compare_at_price && input.compare_at_price > 0
-                  ? Number(input.compare_at_price)
-                  : null,
-              is_featured: isFeaturedFlag,
-              stock: Math.max(0, Math.floor(Number(input.stock))),
-            })
+            .update(fullPayload)
             .eq("id", productId);
-          if (error) throw error;
+          if (errWithImg) {
+            const { error: errWithoutImg } = await client
+              .from("products")
+              .update(basePayloadWithoutImageUrl)
+              .eq("id", productId);
+            if (errWithoutImg) throw errWithoutImg;
+          }
         } else {
-          const { data: inserted, error } = await client
+          const { data: insertedWithImg, error: errWithImg } = await client
             .from("products")
-            .insert({
-              name: cleanName,
-              slug: cleanSlug,
-              description: input.description ?? null,
-              price: Number(input.price),
-              compare_at_price:
-                input.compare_at_price && input.compare_at_price > 0
-                  ? Number(input.compare_at_price)
-                  : null,
-              is_featured: isFeaturedFlag,
-              stock: Math.max(0, Math.floor(Number(input.stock))),
-            })
+            .insert(fullPayload)
             .select("id")
             .single();
-          if (error) throw error;
-          productId = String(inserted.id);
+
+          if (!errWithImg && insertedWithImg) {
+            productId = String(insertedWithImg.id);
+          } else {
+            const { data: insertedBase, error: errBase } = await client
+              .from("products")
+              .insert(basePayloadWithoutImageUrl)
+              .select("id")
+              .single();
+            if (errBase) throw errBase;
+            productId = String(insertedBase.id);
+          }
         }
 
         if (productId) {

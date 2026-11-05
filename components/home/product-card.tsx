@@ -24,8 +24,8 @@ export function ProductCard({ product }: { product: ProductWithImages }) {
     : undefined;
 
   const mainImageRaw =
-    product.product_images?.[0]?.image_url ||
     product.image_url ||
+    product.product_images?.[0]?.image_url ||
     firstArrayImg ||
     null;
 
