@@ -1,6 +1,5 @@
 import { CheckCircle2 } from "lucide-react";
 import { MediaFrame } from "@/components/ui/media-frame";
-import { publicAsset } from "@/lib/assets";
 
 const points = [
   "Revestimento antiaderente de alta resistência, que dispensa excesso de óleo",
@@ -10,7 +9,7 @@ const points = [
 ];
 
 export function AboutBrand() {
-  const chef = publicAsset("chef-sobre.jpg");
+  const chef = "/chef-sobre.png";
 
   return (
     <section id="sobre" className="scroll-mt-28 bg-marmo/50 py-16 lg:py-24">
