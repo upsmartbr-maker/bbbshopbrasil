@@ -95,3 +95,4 @@ Após o deploy na Vercel, cadastre as seguintes URLs de notificação nos painé
 
 - **Mercado Pago:** `https://SEU-DOMINIO.vercel.app/api/webhooks/mercadopago`
 - **PagSeguro (PagBank):** `https://SEU-DOMINIO.vercel.app/api/webhooks/pagseguro`
+

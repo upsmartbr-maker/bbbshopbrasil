@@ -1,10 +1,22 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
+function normalizeSupabaseUrl(raw: string): string {
+  return raw
+    .trim()
+    .replace(/\/rest\/v1\/?$/i, "")
+    .replace(/\/+$/, "");
+}
+
+const supabaseUrl = normalizeSupabaseUrl(
+  process.env.NEXT_PUBLIC_SUPABASE_URL ?? ""
+);
+const supabaseAnonKey = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "").trim();
 
 export function isSupabaseConfigured(): boolean {
-  return Boolean(supabaseUrl && (supabaseAnonKey || process.env.SUPABASE_SERVICE_ROLE_KEY));
+  return Boolean(
+    supabaseUrl &&
+      (supabaseAnonKey || process.env.SUPABASE_SERVICE_ROLE_KEY)
+  );
 }
 
 /**
@@ -25,7 +37,7 @@ export function getSupabaseAdmin(): SupabaseClient {
   if (typeof window !== "undefined") {
     throw new Error("getSupabaseAdmin() não pode ser usado no browser.");
   }
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY ?? "").trim();
   if (!supabaseUrl || !serviceKey) {
     throw new Error(
       "Supabase admin não configurado: defina NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY."

@@ -68,8 +68,8 @@ function AdminLoginForm() {
   };
 
   const fillDemoCredentials = () => {
-    setEmail("admin@bbbshopbrasil.com.br");
-    setPassword("admin123");
+    setEmail("bbbshopbrasil@gmail.com");
+    setPassword("123mudar");
     setError(null);
   };
 
@@ -152,10 +152,11 @@ function AdminLoginForm() {
                   id="admin-password"
                   type="password"
                   required
+                  minLength={7}
                   autoComplete="current-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
+                  placeholder="Mínimo de 7 caracteres"
                   className="h-11 w-full rounded-xl border border-slate-200 bg-[#F8FAFC] pl-10 pr-4 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-900 focus:bg-white focus:outline-none"
                 />
               </div>
@@ -173,14 +174,14 @@ function AdminLoginForm() {
 
           <div className="mt-6 rounded-xl border border-slate-200/80 bg-[#F8FAFC] p-3.5 text-center">
             <p className="text-xs text-slate-500">
-              Ambiente de avaliação / sem `.env` Supabase configurado:
+              Acesso rápido do administrador inicial:
             </p>
             <button
               type="button"
               onClick={fillDemoCredentials}
               className="mt-1.5 text-xs font-semibold text-slate-800 underline decoration-slate-300 underline-offset-4 hover:text-slate-950"
             >
-              Preencher acesso rápido (admin@bbbshopbrasil.com.br)
+              Preencher acesso rápido (bbbshopbrasil@gmail.com)
             </button>
           </div>
         </div>
