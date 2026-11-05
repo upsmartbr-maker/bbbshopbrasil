@@ -1,10 +1,9 @@
 import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { MediaFrame } from "@/components/ui/media-frame";
-import { publicAsset } from "@/lib/assets";
 
 export function Hero() {
-  const chef = publicAsset("chef-hero.jpg");
+  const chef = "/chef-hero.jpg";
 
   return (
     <section className="bg-gradient-to-b from-marmo/60 to-crema">
