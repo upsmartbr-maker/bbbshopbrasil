@@ -2,7 +2,10 @@
 let customSupabaseHost;
 try {
   if (process.env.NEXT_PUBLIC_SUPABASE_URL) {
-    customSupabaseHost = new URL(process.env.NEXT_PUBLIC_SUPABASE_URL).hostname;
+    const cleanUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+      .trim()
+      .replace(/\/rest\/v1\/?$/i, "");
+    customSupabaseHost = new URL(cleanUrl).hostname;
   }
 } catch {
   customSupabaseHost = undefined;
@@ -12,12 +15,22 @@ const remotePatterns = [
   {
     protocol: "https",
     hostname: "**.supabase.co",
-    pathname: "/storage/v1/object/public/**",
+    pathname: "/**",
+  },
+  {
+    protocol: "https",
+    hostname: "xfaxxdmjxwfyfxylzepf.supabase.co",
+    pathname: "/**",
+  },
+  {
+    protocol: "https",
+    hostname: "xfaxxldmjxwfyfxylzepf.supabase.co",
+    pathname: "/**",
   },
   {
     protocol: "https",
     hostname: "**.supabase.in",
-    pathname: "/storage/v1/object/public/**",
+    pathname: "/**",
   },
   {
     protocol: "https",
@@ -49,7 +62,7 @@ if (
   remotePatterns.push({
     protocol: "https",
     hostname: customSupabaseHost,
-    pathname: "/storage/v1/object/public/**",
+    pathname: "/**",
   });
 }
 

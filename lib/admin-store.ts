@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import { FALLBACK_BANNERS, FALLBACK_PRODUCTS } from "@/lib/fallback";
 import { getServerSupabaseClient, isSupabaseConfigured } from "@/lib/supabase";
-import { slugify } from "@/lib/utils";
+import { resolveStorageImageUrl, slugify } from "@/lib/utils";
 import type {
   Banner,
   GatewayName,
@@ -19,8 +19,12 @@ interface LocalMemoryStore {
   orders: Order[];
 }
 
+const STORAGE_STATE_BUCKET = "products";
+const STORAGE_STATE_PATH = "_store/catalog-v1.json";
+
 const globalForAdmin = globalThis as unknown as {
   __bbbAdminStore?: LocalMemoryStore;
+  __bbbStorageHydrated?: boolean;
 };
 
 function createInitialStore(): LocalMemoryStore {
@@ -113,12 +117,111 @@ export function getLocalStore(): LocalMemoryStore {
   return globalForAdmin.__bbbAdminStore;
 }
 
+/**
+ * Sincroniza o estado com um arquivo JSON no Supabase Storage ('products/_store/catalog-v1.json')
+ * para garantir persistência em nuvem na Vercel mesmo quando as tabelas SQL ainda não foram criadas.
+ */
+async function readCloudFallbackStore(): Promise<LocalMemoryStore> {
+  const local = getLocalStore();
+  if (!isSupabaseConfigured()) return local;
+
+  const client = getServerSupabaseClient();
+  if (!client) return local;
+
+  try {
+    const { data, error } = await client.storage
+      .from(STORAGE_STATE_BUCKET)
+      .download(STORAGE_STATE_PATH);
+
+    if (!error && data) {
+      const text = await data.text();
+      const parsed = JSON.parse(text) as Partial<LocalMemoryStore>;
+      if (parsed && typeof parsed === "object") {
+        if (Array.isArray(parsed.products) && parsed.products.length > 0) {
+          local.products = parsed.products.map(normalizeProductRecord);
+        }
+        if (Array.isArray(parsed.banners) && parsed.banners.length > 0) {
+          local.banners = parsed.banners.map(normalizeBannerRecord);
+        }
+        if (Array.isArray(parsed.orders) && parsed.orders.length > 0) {
+          local.orders = parsed.orders;
+        }
+        if (parsed.settings) {
+          local.settings = { ...local.settings, ...parsed.settings, id: 1 };
+        }
+        globalForAdmin.__bbbStorageHydrated = true;
+      }
+    }
+  } catch {
+    /* mantém store em memória */
+  }
+
+  return local;
+}
+
+async function writeCloudFallbackStore(store: LocalMemoryStore): Promise<void> {
+  if (!isSupabaseConfigured()) return;
+  const client = getServerSupabaseClient();
+  if (!client) return;
+
+  try {
+    const payload = Buffer.from(JSON.stringify(store), "utf-8");
+    await client.storage
+      .from(STORAGE_STATE_BUCKET)
+      .upload(STORAGE_STATE_PATH, payload, {
+        contentType: "application/json",
+        cacheControl: "0",
+        upsert: true,
+      });
+  } catch {
+    /* ignore */
+  }
+}
+
+function normalizeProductRecord(raw: ProductWithImages): ProductWithImages {
+  const rawImages = Array.isArray(raw.product_images) ? raw.product_images : [];
+  const normalizedImages: ProductImage[] = rawImages
+    .map((img, idx) => {
+      const resolvedUrl = resolveStorageImageUrl(img.image_url, "products");
+      return {
+        id: img.id || `img-${raw.id}-${idx}`,
+        product_id: img.product_id || raw.id,
+        image_url: resolvedUrl || img.image_url || "",
+        order_index: typeof img.order_index === "number" ? img.order_index : idx,
+      };
+    })
+    .filter((img) => Boolean(img.image_url))
+    .sort((a, b) => a.order_index - b.order_index);
+
+  return {
+    ...raw,
+    price: Number(raw.price ?? 0),
+    compare_at_price:
+      raw.compare_at_price !== null && raw.compare_at_price !== undefined
+        ? Number(raw.compare_at_price)
+        : null,
+    is_featured: raw.is_featured === undefined || raw.is_featured === null ? true : Boolean(raw.is_featured),
+    stock: typeof raw.stock === "number" ? raw.stock : Number(raw.stock ?? 10),
+    product_images: normalizedImages,
+  };
+}
+
+function normalizeBannerRecord(raw: Banner): Banner {
+  return {
+    ...raw,
+    image_url: resolveStorageImageUrl(raw.image_url, "banners") || raw.image_url || "",
+    is_active: raw.is_active === undefined || raw.is_active === null ? true : Boolean(raw.is_active),
+    order_index: Number(raw.order_index ?? 1),
+  };
+}
+
 // ============================================================================
 // SETTINGS
 // ============================================================================
 
 export async function adminGetSettings(): Promise<Settings> {
-  const local = getLocalStore().settings;
+  const store = await readCloudFallbackStore();
+  const local = store.settings;
   if (!isSupabaseConfigured()) return local;
 
   const client = getServerSupabaseClient();
@@ -152,7 +255,7 @@ export async function adminGetSettings(): Promise<Settings> {
 export async function adminUpdateSettings(
   patch: Partial<Omit<Settings, "id">>
 ): Promise<Settings> {
-  const store = getLocalStore();
+  const store = await readCloudFallbackStore();
   const next: Settings = {
     ...store.settings,
     ...patch,
@@ -165,12 +268,12 @@ export async function adminUpdateSettings(
           : store.settings.active_gateway,
   };
   store.settings = next;
+  await writeCloudFallbackStore(store);
 
   if (isSupabaseConfigured()) {
     const client = getServerSupabaseClient();
     if (client) {
       try {
-        // Tenta salvar todos os campos (incluindo pagseguro_app_id e pagseguro_app_key se a migração 03 estiver aplicada)
         const { error } = await client.from("settings").upsert(
           {
             id: 1,
@@ -186,7 +289,6 @@ export async function adminUpdateSettings(
         );
 
         if (error) {
-          // Fallback caso as colunas pagseguro_app_id/key ainda não existam no banco remoto
           await client.from("settings").upsert(
             {
               id: 1,
@@ -200,7 +302,7 @@ export async function adminUpdateSettings(
           );
         }
       } catch {
-        // Mantém atualizado na store em memória
+        // Mantém salvo no cloud fallback store
       }
     }
   }
@@ -213,7 +315,7 @@ export async function adminUpdateSettings(
 // ============================================================================
 
 export async function adminListOrders(): Promise<Order[]> {
-  const store = getLocalStore();
+  const store = await readCloudFallbackStore();
   if (!isSupabaseConfigured()) return store.orders;
 
   const client = getServerSupabaseClient();
@@ -226,7 +328,7 @@ export async function adminListOrders(): Promise<Order[]> {
       .order("created_at", { ascending: false })
       .limit(100);
 
-    if (error || !data) return store.orders;
+    if (error || !data || data.length === 0) return store.orders;
     return data as Order[];
   } catch {
     return store.orders;
@@ -237,10 +339,11 @@ export async function adminUpdateOrderStatus(
   orderId: string,
   status: OrderStatus
 ): Promise<Order | null> {
-  const store = getLocalStore();
+  const store = await readCloudFallbackStore();
   const idx = store.orders.findIndex((o) => o.id === orderId);
   if (idx >= 0) {
     store.orders[idx] = { ...store.orders[idx], status };
+    await writeCloudFallbackStore(store);
   }
 
   if (isSupabaseConfigured()) {
@@ -266,6 +369,7 @@ export async function adminUpdateOrderStatus(
 export function adminRecordLocalOrder(order: Order): void {
   const store = getLocalStore();
   store.orders = [order, ...store.orders.filter((o) => o.id !== order.id)];
+  void writeCloudFallbackStore(store);
 }
 
 // ============================================================================
@@ -273,11 +377,15 @@ export function adminRecordLocalOrder(order: Order): void {
 // ============================================================================
 
 export async function adminListProducts(): Promise<ProductWithImages[]> {
-  const store = getLocalStore();
-  if (!isSupabaseConfigured()) return store.products;
+  const store = await readCloudFallbackStore();
+  if (!isSupabaseConfigured()) {
+    return store.products.map(normalizeProductRecord);
+  }
 
   const client = getServerSupabaseClient();
-  if (!client) return store.products;
+  if (!client) {
+    return store.products.map(normalizeProductRecord);
+  }
 
   try {
     const { data, error } = await client
@@ -287,18 +395,13 @@ export async function adminListProducts(): Promise<ProductWithImages[]> {
       )
       .order("created_at", { ascending: false });
 
-    if (error || !data) return store.products;
-    return (data as ProductWithImages[]).map((p) => ({
-      ...p,
-      price: Number(p.price),
-      compare_at_price:
-        p.compare_at_price !== null ? Number(p.compare_at_price) : null,
-      product_images: [...(p.product_images ?? [])].sort(
-        (a, b) => a.order_index - b.order_index
-      ),
-    }));
+    if (error || !data || data.length === 0) {
+      return store.products.map(normalizeProductRecord);
+    }
+
+    return (data as ProductWithImages[]).map(normalizeProductRecord);
   } catch {
-    return store.products;
+    return store.products.map(normalizeProductRecord);
   }
 }
 
@@ -317,15 +420,28 @@ export interface UpsertProductInput {
 export async function adminSaveProduct(
   input: UpsertProductInput
 ): Promise<ProductWithImages> {
-  const store = getLocalStore();
+  const store = await readCloudFallbackStore();
   const cleanName = input.name.trim();
-  const cleanSlug = slugify(input.slug?.trim() || cleanName) || `produto-${Date.now()}`;
-  const cleanImages = (input.images ?? []).slice(0, 8).map((img, index) => ({
-    id: img.id || randomUUID(),
-    product_id: input.id || "",
-    image_url: img.image_url,
-    order_index: index,
-  }));
+  const cleanSlug =
+    slugify(input.slug?.trim() || cleanName) || `produto-${Date.now()}`;
+  const cleanImages = (input.images ?? [])
+    .slice(0, 8)
+    .map((img, index) => {
+      const fullUrl =
+        resolveStorageImageUrl(img.image_url, "products") || img.image_url;
+      return {
+        id: img.id || randomUUID(),
+        product_id: input.id || "",
+        image_url: fullUrl,
+        order_index: index,
+      };
+    })
+    .filter((img) => Boolean(img.image_url));
+
+  const isFeaturedFlag =
+    input.is_featured === undefined || input.is_featured === null
+      ? true
+      : Boolean(input.is_featured);
 
   if (isSupabaseConfigured()) {
     const client = getServerSupabaseClient();
@@ -344,7 +460,7 @@ export async function adminSaveProduct(
                 input.compare_at_price && input.compare_at_price > 0
                   ? Number(input.compare_at_price)
                   : null,
-              is_featured: Boolean(input.is_featured),
+              is_featured: isFeaturedFlag,
               stock: Math.max(0, Math.floor(Number(input.stock))),
             })
             .eq("id", productId);
@@ -361,7 +477,7 @@ export async function adminSaveProduct(
                 input.compare_at_price && input.compare_at_price > 0
                   ? Number(input.compare_at_price)
                   : null,
-              is_featured: Boolean(input.is_featured),
+              is_featured: isFeaturedFlag,
               stock: Math.max(0, Math.floor(Number(input.stock))),
             })
             .select("id")
@@ -371,8 +487,10 @@ export async function adminSaveProduct(
         }
 
         if (productId) {
-          // Sincroniza imagens (máximo 8 garantido pela trigger e pelo slice(0, 8))
-          await client.from("product_images").delete().eq("product_id", productId);
+          await client
+            .from("product_images")
+            .delete()
+            .eq("product_id", productId);
           if (cleanImages.length > 0) {
             await client.from("product_images").insert(
               cleanImages.map((img, idx) => ({
@@ -392,30 +510,19 @@ export async function adminSaveProduct(
             .single();
 
           if (fullProduct) {
-            const formatted: ProductWithImages = {
-              ...(fullProduct as ProductWithImages),
-              price: Number(fullProduct.price),
-              compare_at_price:
-                fullProduct.compare_at_price !== null
-                  ? Number(fullProduct.compare_at_price)
-                  : null,
-              product_images: [...(fullProduct.product_images ?? [])].sort(
-                (a, b) => a.order_index - b.order_index
-              ),
-            };
-            return formatted;
+            return normalizeProductRecord(fullProduct as ProductWithImages);
           }
         }
       } catch (err) {
         console.warn(
-          "[adminSaveProduct] Aviso Supabase, salvando em store local:",
+          "[adminSaveProduct] Tabela SQL indisponível, persistindo no Supabase Storage JSON store:",
           err instanceof Error ? err.message : err
         );
       }
     }
   }
 
-  // Atualização em memória (fallback / dev)
+  // Persistência garantida (memória + Supabase Storage JSON)
   const existingIdx = input.id
     ? store.products.findIndex((p) => p.id === input.id)
     : -1;
@@ -427,7 +534,7 @@ export async function adminSaveProduct(
     order_index: idx,
   }));
 
-  const saved: ProductWithImages = {
+  const saved: ProductWithImages = normalizeProductRecord({
     id,
     name: cleanName,
     slug: cleanSlug,
@@ -437,14 +544,14 @@ export async function adminSaveProduct(
       input.compare_at_price && input.compare_at_price > 0
         ? Number(input.compare_at_price)
         : null,
-    is_featured: Boolean(input.is_featured),
+    is_featured: isFeaturedFlag,
     stock: Math.max(0, Math.floor(Number(input.stock))),
     created_at:
       existingIdx >= 0
         ? store.products[existingIdx].created_at
         : new Date().toISOString(),
     product_images: productImages,
-  };
+  });
 
   if (existingIdx >= 0) {
     store.products[existingIdx] = saved;
@@ -452,12 +559,14 @@ export async function adminSaveProduct(
     store.products = [saved, ...store.products];
   }
 
+  await writeCloudFallbackStore(store);
   return saved;
 }
 
 export async function adminDeleteProduct(id: string): Promise<boolean> {
-  const store = getLocalStore();
+  const store = await readCloudFallbackStore();
   store.products = store.products.filter((p) => p.id !== id);
+  await writeCloudFallbackStore(store);
 
   if (isSupabaseConfigured() && !id.startsWith("demo-")) {
     const client = getServerSupabaseClient();
@@ -478,13 +587,15 @@ export async function adminDeleteProduct(id: string): Promise<boolean> {
 // ============================================================================
 
 export async function adminListBanners(): Promise<Banner[]> {
-  const store = getLocalStore();
+  const store = await readCloudFallbackStore();
   if (!isSupabaseConfigured()) {
-    return [...store.banners].sort((a, b) => a.order_index - b.order_index);
+    return [...store.banners]
+      .map(normalizeBannerRecord)
+      .sort((a, b) => a.order_index - b.order_index);
   }
 
   const client = getServerSupabaseClient();
-  if (!client) return store.banners;
+  if (!client) return store.banners.map(normalizeBannerRecord);
 
   try {
     const { data, error } = await client
@@ -492,10 +603,14 @@ export async function adminListBanners(): Promise<Banner[]> {
       .select("*")
       .order("order_index", { ascending: true });
 
-    if (error || !data) return store.banners;
-    return data as Banner[];
+    if (error || !data || data.length === 0) {
+      return [...store.banners]
+        .map(normalizeBannerRecord)
+        .sort((a, b) => a.order_index - b.order_index);
+    }
+    return (data as Banner[]).map(normalizeBannerRecord);
   } catch {
-    return store.banners;
+    return store.banners.map(normalizeBannerRecord);
   }
 }
 
@@ -511,11 +626,13 @@ export interface UpsertBannerInput {
 }
 
 export async function adminSaveBanner(input: UpsertBannerInput): Promise<Banner> {
-  const store = getLocalStore();
+  const store = await readCloudFallbackStore();
+  const fullImg =
+    resolveStorageImageUrl(input.image_url, "banners") || input.image_url.trim();
   const payload = {
     title: input.title.trim(),
     subtitle: input.subtitle?.trim() || null,
-    image_url: input.image_url.trim(),
+    image_url: fullImg,
     button_text: input.button_text?.trim() || null,
     link: input.link?.trim() || "/produtos",
     order_index: Number(input.order_index ?? store.banners.length + 1),
@@ -533,14 +650,14 @@ export async function adminSaveBanner(input: UpsertBannerInput): Promise<Banner>
             .eq("id", input.id)
             .select("*")
             .single();
-          if (!error && data) return data as Banner;
+          if (!error && data) return normalizeBannerRecord(data as Banner);
         } else {
           const { data, error } = await client
             .from("banners")
             .insert(payload)
             .select("*")
             .single();
-          if (!error && data) return data as Banner;
+          if (!error && data) return normalizeBannerRecord(data as Banner);
         }
       } catch {
         /* fallback */
@@ -551,10 +668,10 @@ export async function adminSaveBanner(input: UpsertBannerInput): Promise<Banner>
   const existingIdx = input.id
     ? store.banners.findIndex((b) => b.id === input.id)
     : -1;
-  const saved: Banner = {
+  const saved: Banner = normalizeBannerRecord({
     id: existingIdx >= 0 ? store.banners[existingIdx].id : randomUUID(),
     ...payload,
-  };
+  });
 
   if (existingIdx >= 0) {
     store.banners[existingIdx] = saved;
@@ -562,12 +679,14 @@ export async function adminSaveBanner(input: UpsertBannerInput): Promise<Banner>
     store.banners.push(saved);
   }
 
+  await writeCloudFallbackStore(store);
   return saved;
 }
 
 export async function adminDeleteBanner(id: string): Promise<boolean> {
-  const store = getLocalStore();
+  const store = await readCloudFallbackStore();
   store.banners = store.banners.filter((b) => b.id !== id);
+  await writeCloudFallbackStore(store);
 
   if (isSupabaseConfigured() && !id.startsWith("demo-")) {
     const client = getServerSupabaseClient();
@@ -586,7 +705,7 @@ export async function adminDeleteBanner(id: string): Promise<boolean> {
 export async function adminReorderBanners(
   orderedIds: string[]
 ): Promise<Banner[]> {
-  const store = getLocalStore();
+  const store = await readCloudFallbackStore();
   const map = new Map(store.banners.map((b) => [b.id, b]));
   const next: Banner[] = [];
 
@@ -601,6 +720,7 @@ export async function adminReorderBanners(
     next.push({ ...item, order_index: next.length + 1 });
   });
   store.banners = next;
+  await writeCloudFallbackStore(store);
 
   if (isSupabaseConfigured()) {
     const client = getServerSupabaseClient();
@@ -626,4 +746,3 @@ export async function adminReorderBanners(
 }
 
 export type { GatewayName };
-

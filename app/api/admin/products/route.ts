@@ -1,3 +1,4 @@
+import { revalidatePath } from "next/cache";
 import { NextResponse } from "next/server";
 import {
   adminDeleteProduct,
@@ -5,6 +6,8 @@ import {
   adminSaveProduct,
   type UpsertProductInput,
 } from "@/lib/admin-store";
+
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   const products = await adminListProducts();
@@ -37,6 +40,8 @@ export async function POST(request: Request) {
   }
 
   const product = await adminSaveProduct(body);
+  revalidatePath("/");
+  revalidatePath("/produtos");
   return NextResponse.json({ ok: true, product });
 }
 
@@ -55,6 +60,7 @@ export async function DELETE(request: Request) {
   }
 
   await adminDeleteProduct(id);
+  revalidatePath("/");
+  revalidatePath("/produtos");
   return NextResponse.json({ ok: true });
 }
-

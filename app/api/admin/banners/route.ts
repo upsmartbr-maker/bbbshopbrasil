@@ -1,3 +1,4 @@
+import { revalidatePath } from "next/cache";
 import { NextResponse } from "next/server";
 import {
   adminDeleteBanner,
@@ -6,6 +7,8 @@ import {
   adminSaveBanner,
   type UpsertBannerInput,
 } from "@/lib/admin-store";
+
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   const banners = await adminListBanners();
@@ -27,6 +30,7 @@ export async function POST(request: Request) {
 
   if (Array.isArray(body.orderedIds)) {
     const banners = await adminReorderBanners(body.orderedIds);
+    revalidatePath("/");
     return NextResponse.json({ ok: true, banners });
   }
 
@@ -38,6 +42,7 @@ export async function POST(request: Request) {
   }
 
   const banner = await adminSaveBanner(body);
+  revalidatePath("/");
   return NextResponse.json({ ok: true, banner });
 }
 
@@ -56,6 +61,6 @@ export async function DELETE(request: Request) {
   }
 
   await adminDeleteBanner(id);
+  revalidatePath("/");
   return NextResponse.json({ ok: true });
 }
-

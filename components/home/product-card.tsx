@@ -3,22 +3,53 @@
 import * as React from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { ImageIcon, ShoppingBag } from "lucide-react";
+import { ShoppingBag } from "lucide-react";
 import { useCart } from "@/components/cart/cart-provider";
-import { formatBRL } from "@/lib/utils";
+import {
+  FALLBACK_PRODUCT_IMAGE,
+  formatBRL,
+  resolveStorageImageUrl,
+} from "@/lib/utils";
 import { SITE } from "@/lib/site";
 import type { ProductWithImages } from "@/types/database";
 
 export function ProductCard({ product }: { product: ProductWithImages }) {
   const router = useRouter();
   const { addItem, open } = useCart();
-  const images = product.product_images.slice(0, 4);
-  const [active, setActive] = React.useState(0);
-  const current = images[active]?.image_url ?? null;
 
-  const hasDiscount = product.compare_at_price !== null && product.compare_at_price > product.price;
+  const images = React.useMemo(() => {
+    const raw = Array.isArray(product.product_images)
+      ? product.product_images
+      : [];
+    return raw
+      .map((img, idx) => ({
+        id: img.id || `${product.id}-img-${idx}`,
+        url: resolveStorageImageUrl(img.image_url, "products"),
+        order_index: typeof img.order_index === "number" ? img.order_index : idx,
+      }))
+      .filter((img): img is { id: string; url: string; order_index: number } =>
+        Boolean(img.url)
+      )
+      .sort((a, b) => a.order_index - b.order_index)
+      .slice(0, 8);
+  }, [product.id, product.product_images]);
+
+  const [active, setActive] = React.useState(0);
+  const [failedUrls, setFailedUrls] = React.useState<Record<string, boolean>>({});
+
+  const activeUrl = images[active]?.url ?? images[0]?.url ?? null;
+  const displayUrl =
+    activeUrl && !failedUrls[activeUrl] ? activeUrl : FALLBACK_PRODUCT_IMAGE;
+  const isUnoptimized =
+    displayUrl.startsWith("data:") || displayUrl.startsWith("blob:");
+
+  const hasDiscount =
+    product.compare_at_price !== null &&
+    product.compare_at_price > product.price;
   const discountPct = hasDiscount
-    ? Math.round((1 - product.price / (product.compare_at_price as number)) * 100)
+    ? Math.round(
+        (1 - product.price / (product.compare_at_price as number)) * 100
+      )
     : 0;
   const installment = product.price / SITE.installments;
   const soldOut = product.stock <= 0;
@@ -28,25 +59,26 @@ export function ProductCard({ product }: { product: ProductWithImages }) {
     slug: product.slug,
     name: product.name,
     price: product.price,
-    image: images[0]?.image_url ?? null,
+    image: images[0]?.url ?? FALLBACK_PRODUCT_IMAGE,
   };
 
   return (
     <article className="group flex flex-col overflow-hidden rounded-xl border border-nero/10 bg-white transition-shadow hover:shadow-xl">
       <div className="relative aspect-square overflow-hidden bg-marmo">
-        {current ? (
-          <Image
-            src={current}
-            alt={product.name}
-            fill
-            sizes="(min-width: 1024px) 25vw, (min-width: 640px) 50vw, 100vw"
-            className="object-cover transition-transform duration-500 group-hover:scale-105"
-          />
-        ) : (
-          <div role="img" aria-label={product.name} className="flex h-full w-full items-center justify-center bg-gradient-to-br from-marmo to-champagne/30 text-champagne-deep">
-            <ImageIcon className="h-10 w-10" aria-hidden="true" />
-          </div>
-        )}
+        <Image
+          src={displayUrl}
+          alt={product.name}
+          fill
+          unoptimized={isUnoptimized}
+          sizes="(min-width: 1024px) 25vw, (min-width: 640px) 50vw, 100vw"
+          onError={() => {
+            if (activeUrl) {
+              setFailedUrls((prev) => ({ ...prev, [activeUrl]: true }));
+            }
+          }}
+          className="object-cover transition-transform duration-500 group-hover:scale-105"
+        />
+
         {hasDiscount && (
           <span className="absolute left-3 top-3 rounded-md bg-terracotta px-2.5 py-1 text-xs font-bold uppercase tracking-wider text-white">
             -{discountPct}%
@@ -60,39 +92,76 @@ export function ProductCard({ product }: { product: ProductWithImages }) {
       </div>
 
       {images.length > 1 && (
-        <ul className="flex gap-2 px-4 pt-3" aria-label="Fotos do produto">
-          {images.map((img, i) => (
-            <li key={img.id}>
-              <button
-                type="button"
-                onMouseEnter={() => setActive(i)}
-                onFocus={() => setActive(i)}
-                onClick={() => setActive(i)}
-                aria-label={`Ver foto ${i + 1}`}
-                aria-pressed={i === active}
-                className={`relative h-12 w-12 overflow-hidden rounded-md border-2 ${i === active ? "border-champagne" : "border-transparent"}`}
-              >
-                <Image src={img.image_url} alt="" fill sizes="48px" className="object-cover" />
-              </button>
-            </li>
-          ))}
+        <ul
+          className="flex flex-wrap gap-2 px-4 pt-3"
+          aria-label="Fotos do produto"
+        >
+          {images.slice(0, 4).map((img, i) => {
+            const thumbSrc = failedUrls[img.url]
+              ? FALLBACK_PRODUCT_IMAGE
+              : img.url;
+            const thumbUnopt =
+              thumbSrc.startsWith("data:") || thumbSrc.startsWith("blob:");
+
+            return (
+              <li key={img.id}>
+                <button
+                  type="button"
+                  onMouseEnter={() => setActive(i)}
+                  onFocus={() => setActive(i)}
+                  onClick={() => setActive(i)}
+                  aria-label={`Ver foto ${i + 1}`}
+                  aria-pressed={i === active}
+                  className={`relative h-12 w-12 overflow-hidden rounded-md border-2 ${
+                    i === active ? "border-champagne" : "border-transparent"
+                  }`}
+                >
+                  <Image
+                    src={thumbSrc}
+                    alt=""
+                    fill
+                    unoptimized={thumbUnopt}
+                    sizes="48px"
+                    onError={() =>
+                      setFailedUrls((prev) => ({ ...prev, [img.url]: true }))
+                    }
+                    className="object-cover"
+                  />
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
 
       <div className="flex flex-1 flex-col p-4">
-        <h3 className="line-clamp-2 min-h-[3rem] text-base font-semibold leading-snug">{product.name}</h3>
+        <h3 className="line-clamp-2 min-h-[3rem] text-base font-semibold leading-snug">
+          {product.name}
+        </h3>
 
         <div className="mt-3">
           {hasDiscount && (
-            <p className="text-sm text-nero/70 line-through" aria-label={`Preço anterior ${formatBRL(product.compare_at_price as number)}`}>
+            <p
+              className="text-sm text-nero/70 line-through"
+              aria-label={`Preço anterior ${formatBRL(
+                product.compare_at_price as number
+              )}`}
+            >
               {formatBRL(product.compare_at_price as number)}
             </p>
           )}
           <p className="font-display text-3xl font-semibold leading-tight">
-            {formatBRL(product.price)} <span className="font-sans text-sm font-medium text-nero/80">à vista</span>
+            {formatBRL(product.price)}{" "}
+            <span className="font-sans text-sm font-medium text-nero/80">
+              à vista
+            </span>
           </p>
           <p className="text-sm text-nero/85">
-            ou <strong>{SITE.installments}x de {formatBRL(installment)}</strong> sem juros
+            ou{" "}
+            <strong>
+              {SITE.installments}x de {formatBRL(installment)}
+            </strong>{" "}
+            sem juros
           </p>
         </div>
 
@@ -124,4 +193,3 @@ export function ProductCard({ product }: { product: ProductWithImages }) {
     </article>
   );
 }
-

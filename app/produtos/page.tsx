@@ -1,13 +1,20 @@
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 import { ProductCard } from "@/components/home/product-card";
 import { getAllProducts } from "@/lib/data";
 
-export const revalidate = 60;
-
-export default async function ProdutosPage({ searchParams }: { searchParams: { q?: string } }) {
+export default async function ProdutosPage({
+  searchParams,
+}: {
+  searchParams: { q?: string };
+}) {
   const q = (searchParams.q ?? "").trim().toLowerCase();
   const all = await getAllProducts();
   const products = q
-    ? all.filter((p) => `${p.name} ${p.description ?? ""}`.toLowerCase().includes(q))
+    ? all.filter((p) =>
+        `${p.name} ${p.description ?? ""}`.toLowerCase().includes(q)
+      )
     : all;
 
   return (
@@ -16,11 +23,14 @@ export default async function ProdutosPage({ searchParams }: { searchParams: { q
         {q ? `Resultados para “${searchParams.q}”` : "Todos os produtos"}
       </h1>
       <p className="mt-2 text-base text-nero/80">
-        {products.length} {products.length === 1 ? "produto encontrado" : "produtos encontrados"}
+        {products.length}{" "}
+        {products.length === 1 ? "produto encontrado" : "produtos encontrados"}
       </p>
 
       {products.length === 0 ? (
-        <p className="mt-10 text-lg">Nenhum produto encontrado. Tente outro termo de busca.</p>
+        <p className="mt-10 text-lg">
+          Nenhum produto encontrado. Tente outro termo de busca.
+        </p>
       ) : (
         <div className="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
           {products.map((p) => (
