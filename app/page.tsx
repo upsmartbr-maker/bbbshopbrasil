@@ -2,6 +2,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 import { Hero } from "@/components/home/hero";
+import { OfficialBadgeBar } from "@/components/home/OfficialBadgeBar";
 import { BannerCarousel } from "@/components/home/banner-carousel";
 import { ProductShowcase } from "@/components/home/product-showcase";
 import { AboutBrand } from "@/components/home/about-brand";
@@ -47,6 +48,7 @@ export default async function HomePage() {
   return (
     <>
       <Hero />
+      <OfficialBadgeBar />
       <BannerCarousel banners={banners} />
       <ProductShowcase products={products} />
       <AboutBrand />
