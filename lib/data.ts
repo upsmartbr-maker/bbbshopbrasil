@@ -1,5 +1,6 @@
 import "server-only";
 import {
+  adminGetProductImages,
   adminListBanners,
   adminListProducts,
   normalizeProductRecord,
@@ -9,8 +10,8 @@ import { getServerSupabaseClient, isSupabaseConfigured, supabase } from "@/lib/s
 import type { Banner, ProductWithImages, Testimonial } from "@/types/database";
 
 /**
- * Busca os produtos diretamente da tabela 'products' no Supabase ordenados por `created_at desc`.
- * Sem lista estática/mockada: quando não houver produtos cadastrados, retorna [].
+ * Busca os produtos diretamente da tabela 'products' no Supabase ordenados por `created_at desc`,
+ * garantindo ordenação explícita das imagens por `order_index` ascendente (0 = capa principal).
  */
 export async function getFeaturedProducts(
   limit = 8
@@ -23,6 +24,10 @@ export async function getFeaturedProducts(
           .from("products")
           .select("*, product_images(*)")
           .order("created_at", { ascending: false })
+          .order("order_index", {
+            referencedTable: "product_images",
+            ascending: true,
+          })
           .limit(limit);
 
         if (error && error.code !== "PGRST205" && error.code !== "42P01") {
@@ -47,18 +52,47 @@ export async function getFeaturedProducts(
             allFromAdminStore.map((p) => [p.slug, p.product_images])
           );
 
-          return data.map((row) => {
-            const prod = normalizeProductRecord(row as ProductWithImages);
-            if (prod.product_images.length === 0) {
-              const recovered =
-                backupById.get(prod.id) ?? backupBySlug.get(prod.slug);
-              if (recovered && recovered.length > 0) {
-                prod.product_images = recovered;
-                prod.image_url = prod.image_url || recovered[0]?.image_url || null;
+          const resolvedProducts = await Promise.all(
+            data.map(async (row) => {
+              const rawItem = row as ProductWithImages;
+              if (
+                !Array.isArray(rawItem.product_images) ||
+                rawItem.product_images.length === 0
+              ) {
+                const orderedImgs = await adminGetProductImages(
+                  String(rawItem.id)
+                );
+                if (orderedImgs.length > 0) {
+                  rawItem.product_images = orderedImgs;
+                }
               }
-            }
-            return prod;
-          });
+
+              const prod = normalizeProductRecord(rawItem);
+              if (prod.product_images.length === 0) {
+                const recovered =
+                  backupById.get(prod.id) ?? backupBySlug.get(prod.slug);
+                if (recovered && recovered.length > 0) {
+                  const sortedRec = [...recovered].sort(
+                    (a, b) =>
+                      Number(a.order_index ?? 0) - Number(b.order_index ?? 0)
+                  );
+                  prod.product_images = sortedRec;
+                }
+              }
+
+              if (prod.product_images.length > 0) {
+                prod.product_images.sort(
+                  (a, b) =>
+                    Number(a.order_index ?? 0) - Number(b.order_index ?? 0)
+                );
+                prod.image_url = prod.product_images[0].image_url;
+              }
+
+              return prod;
+            })
+          );
+
+          return resolvedProducts;
         }
       } catch {
         // Continua para adminListProducts caso a tabela SQL não exista no schema cache
@@ -103,18 +137,26 @@ export async function getProductBySlug(
           .maybeSingle();
 
         if (!error && data) {
+          const orderedImages = await adminGetProductImages(String(data.id));
           const allFromStore = await adminListProducts();
           const matchInStore = allFromStore.find(
             (p) => p.id === String(data.id) || p.slug.toLowerCase() === clean
           );
-          const normalized = normalizeProductRecord(data as ProductWithImages);
+          const rawProduct = {
+            ...(data as ProductWithImages),
+            product_images: orderedImages,
+          };
+          const normalized = normalizeProductRecord(rawProduct);
           if (matchInStore) {
-            if (normalized.product_images.length === 0 && matchInStore.product_images.length > 0) {
-              normalized.product_images = matchInStore.product_images;
-              normalized.image_url =
-                normalized.image_url ||
-                matchInStore.product_images[0]?.image_url ||
-                null;
+            if (
+              normalized.product_images.length === 0 &&
+              matchInStore.product_images.length > 0
+            ) {
+              const sortedStoreImgs = [...matchInStore.product_images].sort(
+                (a, b) =>
+                  Number(a.order_index ?? 0) - Number(b.order_index ?? 0)
+              );
+              normalized.product_images = sortedStoreImgs;
             }
             if (
               (!normalized.variants || normalized.variants.length === 0) &&
@@ -123,6 +165,12 @@ export async function getProductBySlug(
             ) {
               normalized.variants = matchInStore.variants;
             }
+          }
+          if (normalized.product_images.length > 0) {
+            normalized.product_images.sort(
+              (a, b) => Number(a.order_index ?? 0) - Number(b.order_index ?? 0)
+            );
+            normalized.image_url = normalized.product_images[0].image_url;
           }
           return normalized;
         }

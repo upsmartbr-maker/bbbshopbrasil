@@ -32,12 +32,34 @@ export function isSupabaseConfigured(): boolean {
 }
 
 /**
+ * Wrapper de fetch que desativa qualquer cache do Next.js Data Cache / CDN
+ * em consultas do Supabase e downloads do catálogo JSON no Storage.
+ */
+const noStoreFetch: typeof fetch = (input, init) => {
+  let targetInput = input;
+  const method = (init?.method ?? "GET").toUpperCase();
+
+  if (method === "GET" && typeof input === "string" && input.includes("_store/catalog-v1.json")) {
+    const separator = input.includes("?") ? "&" : "?";
+    targetInput = `${input}${separator}cb=${Date.now()}`;
+  }
+
+  return fetch(targetInput, {
+    ...init,
+    cache: "no-store",
+  });
+};
+
+/**
  * Client público (browser e server components).
  */
 export const supabase: SupabaseClient = createClient(
   supabaseUrl,
   supabaseAnonKey,
-  { auth: { persistSession: false } }
+  {
+    auth: { persistSession: false },
+    global: { fetch: noStoreFetch },
+  }
 );
 
 /**
@@ -56,6 +78,7 @@ export function getSupabaseAdmin(): SupabaseClient {
   }
   return createClient(supabaseUrl, serviceKey, {
     auth: { persistSession: false, autoRefreshToken: false },
+    global: { fetch: noStoreFetch },
   });
 }
 

@@ -8,10 +8,20 @@ import {
 } from "@/lib/admin-store";
 
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+const NO_STORE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+  Pragma: "no-cache",
+  Expires: "0",
+};
 
 export async function GET() {
   const products = await adminListProducts();
-  return NextResponse.json({ ok: true, products });
+  return NextResponse.json(
+    { ok: true, products },
+    { headers: NO_STORE_HEADERS }
+  );
 }
 
 export async function POST(request: Request) {
@@ -42,9 +52,16 @@ export async function POST(request: Request) {
   const product = await adminSaveProduct(body);
   revalidatePath("/");
   revalidatePath("/produtos");
+  revalidatePath("/admin/produtos");
+  revalidatePath("/produto/[slug]", "page");
+  revalidatePath("/produtos/[slug]", "page");
   revalidatePath(`/produto/${product.slug}`);
   revalidatePath(`/produtos/${product.slug}`);
-  return NextResponse.json({ ok: true, product });
+
+  return NextResponse.json(
+    { ok: true, product },
+    { headers: NO_STORE_HEADERS }
+  );
 }
 
 export async function PUT(request: Request) {
@@ -64,5 +81,9 @@ export async function DELETE(request: Request) {
   await adminDeleteProduct(id);
   revalidatePath("/");
   revalidatePath("/produtos");
-  return NextResponse.json({ ok: true });
+  revalidatePath("/admin/produtos");
+  revalidatePath("/produto/[slug]", "page");
+  revalidatePath("/produtos/[slug]", "page");
+
+  return NextResponse.json({ ok: true }, { headers: NO_STORE_HEADERS });
 }

@@ -127,7 +127,10 @@ export function normalizeProductRecord(
   const collected: ProductImage[] = [];
 
   if (Array.isArray(raw.product_images) && raw.product_images.length > 0) {
-    raw.product_images.forEach((img, idx) => {
+    const sortedRawImages = [...raw.product_images].sort(
+      (a, b) => Number(a?.order_index ?? 0) - Number(b?.order_index ?? 0)
+    );
+    sortedRawImages.forEach((img, idx) => {
       const candidate =
         img?.image_url ||
         (img as unknown as { url?: string })?.url ||
@@ -214,6 +217,15 @@ export function normalizeProductRecord(
   }
 
   collected.sort((a, b) => a.order_index - b.order_index);
+  const indexedImages = collected.map((img, idx) => ({
+    ...img,
+    order_index: idx,
+  }));
+
+  const coverFromZeroIndex =
+    indexedImages[0]?.image_url ??
+    (raw.image_url ? resolveStorageImageUrl(raw.image_url, "products") : null) ??
+    null;
 
   return {
     ...raw,
@@ -232,8 +244,8 @@ export function normalizeProductRecord(
         : Boolean(raw.is_featured),
     stock: typeof raw.stock === "number" ? raw.stock : Number(raw.stock ?? 10),
     created_at: String(raw.created_at || new Date().toISOString()),
-    image_url: collected[0]?.image_url ?? raw.image_url ?? null,
-    product_images: collected,
+    image_url: coverFromZeroIndex,
+    product_images: indexedImages,
     variants: normalizedVariants,
   };
 }
@@ -470,6 +482,34 @@ export function adminRecordLocalOrder(order: Order): void {
 // PRODUCTS & PRODUCT_IMAGES
 // ============================================================================
 
+export async function adminGetProductImages(
+  productId: string
+): Promise<ProductImage[]> {
+  if (!isSupabaseConfigured() || !productId) return [];
+  const client = getServerSupabaseClient();
+  if (!client) return [];
+
+  try {
+    const { data, error } = await client
+      .from("product_images")
+      .select("*")
+      .eq("product_id", productId)
+      .order("order_index", { ascending: true });
+
+    if (error || !Array.isArray(data)) return [];
+    return (data as ProductImage[])
+      .sort((a, b) => Number(a.order_index ?? 0) - Number(b.order_index ?? 0))
+      .map((img, idx) => ({
+        ...img,
+        image_url:
+          resolveStorageImageUrl(img.image_url, "products") || img.image_url,
+        order_index: typeof img.order_index === "number" ? img.order_index : idx,
+      }));
+  } catch {
+    return [];
+  }
+}
+
 export async function adminListProducts(): Promise<ProductWithImages[]> {
   const store = await readCloudFallbackStore();
   if (!isSupabaseConfigured()) {
@@ -489,7 +529,11 @@ export async function adminListProducts(): Promise<ProductWithImages[]> {
     let { data, error } = await client
       .from("products")
       .select("*, product_images(*)")
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .order("order_index", {
+        referencedTable: "product_images",
+        ascending: true,
+      });
 
     // Caso a tabela product_images não exista ou não tenha relação FK, consulta apenas products
     if (error && error.code !== "PGRST205" && error.code !== "42P01") {
@@ -520,32 +564,52 @@ export async function adminListProducts(): Promise<ProductWithImages[]> {
       backupBySlug.set(p.slug, p);
     }
 
-    return (data as ProductWithImages[]).map((raw) => {
-      const normalized = normalizeProductRecord(raw);
-      const recovered =
-        backupById.get(normalized.id) ?? backupBySlug.get(normalized.slug);
+    const enrichedList = await Promise.all(
+      (data as ProductWithImages[]).map(async (raw) => {
+        if (!Array.isArray(raw.product_images) || raw.product_images.length === 0) {
+          const orderedFromTable = await adminGetProductImages(String(raw.id));
+          if (orderedFromTable.length > 0) {
+            raw.product_images = orderedFromTable;
+          }
+        }
 
-      if (recovered) {
-        if (
-          normalized.product_images.length === 0 &&
-          recovered.product_images?.length > 0
-        ) {
-          normalized.product_images = recovered.product_images;
-          normalized.image_url =
-            normalized.image_url ||
-            recovered.product_images[0]?.image_url ||
-            null;
+        const normalized = normalizeProductRecord(raw);
+        const recovered =
+          backupById.get(normalized.id) ?? backupBySlug.get(normalized.slug);
+
+        if (recovered) {
+          if (
+            normalized.product_images.length === 0 &&
+            recovered.product_images?.length > 0
+          ) {
+            const sortedRecovered = [...recovered.product_images].sort(
+              (a, b) => Number(a.order_index ?? 0) - Number(b.order_index ?? 0)
+            );
+            normalized.product_images = sortedRecovered;
+            normalized.image_url = sortedRecovered[0]?.image_url || normalized.image_url || null;
+          }
+          if (
+            (!normalized.variants || normalized.variants.length === 0) &&
+            recovered.variants &&
+            recovered.variants.length > 0
+          ) {
+            normalized.variants = recovered.variants;
+          }
         }
-        if (
-          (!normalized.variants || normalized.variants.length === 0) &&
-          recovered.variants &&
-          recovered.variants.length > 0
-        ) {
-          normalized.variants = recovered.variants;
+
+        // Garante que a foto com order_index: 0 seja sempre a capa principal
+        if (normalized.product_images.length > 0) {
+          normalized.product_images.sort(
+            (a, b) => Number(a.order_index ?? 0) - Number(b.order_index ?? 0)
+          );
+          normalized.image_url = normalized.product_images[0].image_url;
         }
-      }
-      return normalized;
-    });
+
+        return normalized;
+      })
+    );
+
+    return enrichedList;
   } catch {
     return store.products
       .filter((p) => !String(p.id).startsWith("demo-"))
@@ -620,7 +684,11 @@ export async function adminSaveProduct(
     });
   }
 
-  const cleanImages = rawImagesList
+  const sortedInputImages = [...rawImagesList].sort(
+    (a, b) => Number(a.order_index ?? 0) - Number(b.order_index ?? 0)
+  );
+
+  const cleanImages = sortedInputImages
     .slice(0, 8)
     .map((img, index) => {
       const fullUrl =
@@ -632,8 +700,13 @@ export async function adminSaveProduct(
         order_index: index,
       };
     })
-    .filter((img) => Boolean(img.image_url));
+    .filter((img) => Boolean(img.image_url))
+    .map((img, index) => ({
+      ...img,
+      order_index: index,
+    }));
 
+  // A foto com order_index: 0 é obrigatoriamente a capa principal do produto
   const mainImageUrl =
     cleanImages[0]?.image_url ||
     cleanVariants[0]?.images?.[0] ||
@@ -728,31 +801,30 @@ export async function adminSaveProduct(
             .update({ variants: cleanVariants })
             .eq("id", productId);
 
-          // Sincroniza a tabela product_images
+          // Sincroniza a tabela product_images mantendo order_index sequencial explícito (0, 1, 2...)
           await client
             .from("product_images")
             .delete()
             .eq("product_id", productId);
 
           if (cleanImages.length > 0) {
-            const { error: imgErr } = await client
-              .from("product_images")
-              .insert(
-                cleanImages.map((img, idx) => ({
+            for (let idx = 0; idx < cleanImages.length; idx++) {
+              const img = cleanImages[idx];
+              const { error: imgErr } = await client
+                .from("product_images")
+                .insert({
                   product_id: productId,
                   image_url: img.image_url,
                   order_index: idx,
-                }))
-              );
+                });
 
-            if (imgErr) {
-              // Fallback caso a tabela product_images não possua a coluna order_index
-              await client.from("product_images").insert(
-                cleanImages.map((img) => ({
+              if (imgErr) {
+                // Fallback caso a tabela product_images não possua a coluna order_index
+                await client.from("product_images").insert({
                   product_id: productId,
                   image_url: img.image_url,
-                }))
-              );
+                });
+              }
             }
           }
         }

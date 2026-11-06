@@ -56,7 +56,7 @@ export function extractDefaultProductImages(
 
   if (Array.isArray(product.product_images) && product.product_images.length > 0) {
     const sorted = [...product.product_images].sort(
-      (a, b) => (a.order_index ?? 0) - (b.order_index ?? 0)
+      (a, b) => Number(a.order_index ?? 0) - Number(b.order_index ?? 0)
     );
     for (const img of sorted) {
       const resolved = resolveStorageImageUrl(img.image_url, "products");
@@ -66,14 +66,16 @@ export function extractDefaultProductImages(
     }
   }
 
-  if (product.image_url) {
+  // Apenas se product_images estiver vazio utiliza image_url ou images como fallback,
+  // garantindo que a foto com order_index: 0 seja obrigatoriamente a 1ª foto (capa principal).
+  if (urls.length === 0 && product.image_url) {
     const resolvedMain = resolveStorageImageUrl(product.image_url, "products");
-    if (resolvedMain && !urls.includes(resolvedMain)) {
-      urls.unshift(resolvedMain);
+    if (resolvedMain) {
+      urls.push(resolvedMain);
     }
   }
 
-  if (Array.isArray(product.images)) {
+  if (urls.length === 0 && Array.isArray(product.images)) {
     for (const item of product.images) {
       const raw =
         typeof item === "string" ? item : item?.image_url || item?.url || "";
