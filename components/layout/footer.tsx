@@ -6,10 +6,18 @@ import { NAV_LINKS, SITE, waLink } from "@/lib/site";
 
 export function Footer() {
   return (
-    <footer id="contato" className="scroll-mt-28 bg-nero text-crema">
+    <footer className="scroll-mt-28 bg-nero text-crema">
       <div className="mx-auto grid max-w-7xl gap-12 px-6 py-16 md:grid-cols-2 lg:grid-cols-4">
         <div>
-          <Image src="/logo.png" alt="BBB Shop Brasil" width={120} height={80} className="h-20 w-auto rounded-md bg-crema p-1" />
+          <Link href="/" aria-label="BBB Shop Brasil — Início" className="inline-block">
+            <Image
+              src="/logo.png"
+              alt="BBB Shop Brasil"
+              width={220}
+              height={96}
+              className="h-11 w-auto rounded-md bg-crema p-1.5 object-contain md:h-16"
+            />
+          </Link>
           <p className="mt-4 text-base leading-relaxed text-crema/85">
             {SITE.tagline}. Panelas e utensílios gourmet de alta qualidade, com entrega para todo o Brasil.
           </p>

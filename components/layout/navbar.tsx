@@ -36,10 +36,17 @@ export function Navbar() {
   );
 
   return (
-    <header className="sticky top-0 z-50 border-b border-nero/10 bg-crema/90 backdrop-blur-md">
-      <div className="mx-auto flex h-20 max-w-7xl items-center gap-6 px-6">
+    <header className="sticky top-0 z-50 border-b border-nero/10 bg-crema/95 backdrop-blur-md">
+      <div className="mx-auto flex max-w-7xl items-center gap-6 px-6 py-3 md:py-4">
         <Link href="/" aria-label="BBB Shop Brasil — Início" className="shrink-0">
-          <Image src="/logo.png" alt="BBB Shop Brasil" width={120} height={80} priority className="h-14 w-auto" />
+          <Image
+            src="/logo.png"
+            alt="BBB Shop Brasil"
+            width={220}
+            height={96}
+            priority
+            className="h-11 w-auto object-contain md:h-16"
+          />
         </Link>
 
         <nav className="hidden items-center gap-7 lg:flex" aria-label="Navegação principal">

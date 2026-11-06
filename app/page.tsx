@@ -5,6 +5,7 @@ import { Hero } from "@/components/home/hero";
 import { BannerCarousel } from "@/components/home/banner-carousel";
 import { ProductShowcase } from "@/components/home/product-showcase";
 import { AboutBrand } from "@/components/home/about-brand";
+import { ContactSection } from "@/components/home/contact-section";
 import { TrustBadges } from "@/components/home/trust-badges";
 import { Testimonials } from "@/components/home/testimonials";
 import { normalizeProductRecord } from "@/lib/admin-store";
@@ -51,6 +52,7 @@ export default async function HomePage() {
       <AboutBrand />
       <TrustBadges />
       <Testimonials items={testimonials} />
+      <ContactSection />
     </>
   );
 }
